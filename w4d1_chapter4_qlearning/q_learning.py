@@ -197,7 +197,10 @@ class EpsilonGreedy(Agent):
     ):
         super().__init__(env, config, gamma, seed)
         self.q = np.ones((self.num_states, self.num_actions)) * self.config.optimism
-        self.q[self.env.unwrapped.env.terminal, :] = 0
+        if 'env' in dir(self.env.unwrapped):
+            self.q[self.env.unwrapped.env.terminal, :] = 0
+        else:
+            assert self.config.optimism == 0
 
     def get_action(self, obs: ObsType) -> ActType:
         '''
@@ -281,6 +284,80 @@ if MAIN:
             label='{}:{:.2f}'.format(name, cum_means[-1])
         )
     plt.legend()
-    plt.title(f"Avg. reward on {env_toy.spec.name}")
+    plt.title(f"Avg. reward on {env_norvig.spec.name}")
     plt.show()
+#%%[markdown]
+#### Norvig
+# %%
+Arr = np.ndarray
+import plotly.express as px
+from IPython.display import display
+
+def show_cliff_value(Q: Arr, title: Optional[str] = None):
+    '''
+    Displays the value of each state in CliffWalking-v0 given a Q-value table.
+    '''
+    V = Q.max(axis=-1).reshape(4, 12)
+    fig = px.imshow(V, text_auto=".2f", title=title)
+    fig.show()
+
+def show_cliff_policy(Q: Arr):
+    '''
+    Displays the greedy policy for CliffWalking-v0 given a Q-value table.
+    '''
+    pi = Q.argmax(axis=-1).reshape((4, 12))
+    objects = {(3, 0): "green", (3, 11): "red"} | {(3, i): "black" for i in range(1, 11)}
+    img = Image.new(mode="RGB", size=(1200, 400), color="white")
+    draw = ImageDraw.Draw(img)
+    for x in range(0, img.width+1, 100):
+        draw.line([(x, 0), (x, img.height)], fill="black", width=4)
+    for y in range(0, img.height+1, 100):
+        draw.line([(0, y), (img.width, y)], fill="black", width=4)
+    for x in range(12):
+        for y in range(4):
+            draw.regular_polygon((50+x*100, 50+y*100, 20), 3, rotation=-int(90*pi[y][x]), fill="black")
+            if (y, x) in objects:
+                draw.regular_polygon((50+x*100, 50+y*100, 40), 4, fill=objects[(y, x)])
+    display(img.resize((600, 200)))
+
+#%%[markdown]
+#### Cliff Walking
+#%%
+if MAIN:
+    env_cliff = gym.make("CliffWalking-v0") 
+    config_cliff  = AgentConfig(
+        epsilon=0.05,
+        lr=0.2,
+        optimism=0,
+    )
+    n_runs = 1_000
+    gamma = 1.00
+    seed = 1
+    args_cliff = (env_cliff , config_cliff, gamma, seed)
+    agents_cliff = [
+        # Cheater(*args_cliff), 
+        QLearning(*args_cliff), 
+        SARSA(*args_cliff), 
+        # Random(*args_cliff)
+    ]
+    returns_cliff = {}
+    for agent in agents_cliff:
+        returns_cliff[agent.name] = agent.train(n_runs)
+if MAIN:
+    for agent in agents_cliff:
+        name = agent.name
+        cum_means = pd.Series(returns_cliff[name]).ewm(alpha=0.01).mean().values
+        plt.plot(
+            cum_means, 
+            label='{}:{:.2f}'.format(name, cum_means[-1])
+        )
+    plt.legend()
+    plt.title(f"Avg. reward on {env_cliff.spec.name} using {config_cliff}")
+    plt.ylim([-100, 0])
+    plt.show()
+# %%
+if MAIN:
+    for agent in agents_cliff:
+        print(agent.name)
+        show_cliff_policy(agent.q)
 # %%
