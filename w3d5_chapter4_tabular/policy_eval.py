@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 import importlib
+import sys
 import utils
 importlib.reload(utils)
 
@@ -120,7 +121,8 @@ if MAIN:
     print(toy.T)
     print(toy.R)
 # %%
-toy.T[0, :, :] # Starting from 0 you can go left or right deterministically
+if MAIN:
+    toy.T[0, :, :] # Starting from 0 you can go left or right deterministically
 # %%
 class Norvig(Environment):
     def dynamics(self, state: int, action: int) -> tuple[Arr, Arr, Arr]:
