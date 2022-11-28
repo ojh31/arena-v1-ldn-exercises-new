@@ -1,6 +1,13 @@
 *__pycache__/
 *exercises.py
-*wandb/
 *videos/
 *runs/
 *celeba/
+*~
+*/wandb/*
+data/
+*/data/*
+*.pt
+.vscode
+*:Zone.Identifier
+*.DS_Store
