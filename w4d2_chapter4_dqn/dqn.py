@@ -381,7 +381,8 @@ class Probe4(gym.Env):
 gym.envs.registration.register(id="Probe4-v0", entry_point=Probe4)
 
 class Probe5(gym.Env):
-    '''Two actions, random 0/1 observation, one timestep, reward is 1 if action equals observation otherwise -1.
+    '''
+    Two actions, random 0/1 observation, one timestep, reward is 1 if action equals observation otherwise -1.
 
     We expect the agent to learn to match its action to the observation.
     '''
@@ -390,15 +391,25 @@ class Probe5(gym.Env):
     observation_space: Box
 
     def __init__(self):
-        pass
+        super().__init__()
+        self.observation_space = Box(np.array([0.0]), np.array([0.0]))
+        self.action_space = Discrete(2)
+        self.seed()
+        self.reset()
 
     def step(self, action: ActType) -> tuple[ObsType, float, bool, dict]:
-        pass
+        reward = 1.0 if action == self.state else -1.0
+        return np.array([0.0]), reward, True, {}
 
     def reset(
         self, seed: Optional[int] = None, return_info=False, options=None
     ) -> Union[ObsType, tuple[ObsType, dict]]:
-        pass
+        if seed is not None:
+            self.np_random.seed(seed)
+        self.state = 1 if self.np_random.random() > 0.5 else 0
+        if return_info:
+            return (np.array([self.state]), {})
+        return np.array([self.state])
 
 gym.envs.registration.register(id="Probe5-v0", entry_point=Probe5)
 # %%
