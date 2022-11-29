@@ -24,6 +24,7 @@ import gym.envs.registration
 import pandas as pd
 import random
 import wandb
+sys.path.append('/home/oskar/projects/arena-v1-ldn-exercises-new')
 from w3d5_chapter4_tabular.utils import make_env
 from w4d2_chapter4_dqn import utils
 
@@ -488,7 +489,7 @@ class Experience:
 def train_dqn(args: DQNArgs):
     (run_name, writer, rng, device, envs) = setup(args)
     num_actions = envs.single_action_space.n
-    dim_observation = envs.observation_space.shape
+    dim_observation = envs.observation_space.shape[1]
     num_envs = envs.num_envs
     seed = args.seed
     q_network = QNetwork(
@@ -503,7 +504,7 @@ def train_dqn(args: DQNArgs):
     ).eval()
     for step in range(args.total_timesteps):
         '''
-        YOUR CODE: Sample actions according to the epsilon greedy policy using the linear 
+        Sample actions according to the epsilon greedy policy using the linear 
         schedule for epsilon, and then step the environment
         Boilerplate to handle the terminal observation case
         '''
@@ -511,34 +512,10 @@ def train_dqn(args: DQNArgs):
         epsilon = linear_schedule(
             step, args.start_e, args.end_e, args.exploration_fraction, args.total_timesteps
         )
-
-        obs = envs.reset(seed=seed)
-        done = False
-        state_index = 0
-        while not done:
-            act = epsilon_greedy_policy(envs, q_network, rng, obs, epsilon)
-            (new_obs, reward, done, info) = envs.step(act)
-            exp = Experience(obs, act, reward, new_obs, done)
-            buffer.add(obs, actions, rewards, dones, next_obs)
-
-            if step > args.learning_starts and state_index % args.train_frequency == 0:
-                # Learning on this step
-                batch = buffer.sample(args.batch_size)
-                with t.inference_mode():
-                    max_q = target_net(batch.new_observations).max(dim=1)
-                rel_q = q_network(batch.observations)[batch.actions]
-                y = rewards + args.gamma * max_q * done
-                loss = ((y - rel_q) ** 2).sum() / len(y)
-                loss.backward()
-                optimizer.step()
-            if state_index % args.target_network_frequency == 0:
-                # Update target on this step
-                target_net.load_state_dict(q_network.state_dict())
-
-            obs = new_obs
-            state_index += 1
-
-        envs.step()
+        act = epsilon_greedy_policy(envs, q_network, rng, t.tensor(obs, device=device), epsilon)
+        (next_obs, rewards, dones, infos) = envs.step(act)
+        buffer.add(obs, actions, rewards, dones, next_obs)
+        envs.step(actions)
         real_next_obs = next_obs.copy()
         for (i, done) in enumerate(dones):
             if done:
@@ -547,10 +524,28 @@ def train_dqn(args: DQNArgs):
         obs = next_obs
         if step > args.learning_starts and step % args.train_frequency == 0:
             '''
-            "YOUR CODE: Sample from the replay buffer, compute the TD target, compute TD loss, and 
-            perform an optimizer step."
+            Learning on this step
+            Sample from the replay buffer, compute the TD target, compute TD loss, and 
+            perform an optimizer step.
             '''
+            rewards = t.tensor(rewards, device=device)
+            done = t.tensor(done, device=device)
+            batch = buffer.sample(args.batch_size, device=device)
+            with t.inference_mode():
+                max_q = target_net(batch.next_observations).max(dim=1).values
+            q_out = q_network(batch.observations)
+            predicted_q_vals = q_out[(
+                t.arange(args.batch_size, device=device), 
+                batch.actions
+            )]
+            y = rewards + args.gamma * max_q * done
+            loss = ((y - predicted_q_vals) ** 2).sum() / len(y)
+            loss.backward()
+            optimizer.step()
             log(writer, start_time, step, predicted_q_vals, loss, infos, epsilon)
+        if step % args.target_network_frequency == 0:
+            # Update target on this step
+            target_net.load_state_dict(q_network.state_dict())
 
     '''
     "If running one of the Probe environments, will test if the learned q-values are
@@ -570,7 +565,7 @@ def train_dqn(args: DQNArgs):
 
     envs.close()
     writer.close()
-
+#%%
 if MAIN:
     if "ipykernel_launcher" in os.path.basename(sys.argv[0]):
         filename = globals().get("__file__", "<filename of this script>")
@@ -582,3 +577,4 @@ if MAIN:
     else:
         args = parse_args()
     train_dqn(args)
+#%%
