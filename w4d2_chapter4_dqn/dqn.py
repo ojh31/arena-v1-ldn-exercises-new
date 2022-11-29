@@ -60,7 +60,7 @@ def test_q_network():
     print("You should manually verify network is Linear-ReLU-Linear-ReLU-Linear")
     assert n_params == 10934
 
-if MAIN:
+if MAIN and ipy_launch:
     test_q_network()
 # %%
 @dataclass
@@ -161,7 +161,7 @@ class ReplayBuffer:
             next_observations=self.next_observations[choices, ...].to(device),
         )
 #%%
-if MAIN:
+if MAIN and ipy_launch:
     utils.test_replay_buffer_single(ReplayBuffer)
     utils.test_replay_buffer_deterministic(ReplayBuffer)
     utils.test_replay_buffer_wraparound(ReplayBuffer)
@@ -188,7 +188,7 @@ def test_replay_buffer():
     df2 = pd.DataFrame(sample.observations, columns=columns)
     df2.plot(subplots=True, title="Shuffled Replay Buffer")
 # %%
-if MAIN:
+if MAIN and ipy_launch:
     test_replay_buffer()
 # %%
 def linear_schedule(
@@ -205,7 +205,7 @@ def linear_schedule(
     end_step = exploration_fraction * total_timesteps
     return max(start_e + current_step * (end_e - start_e) / end_step, end_e)
 
-if MAIN:
+if MAIN and ipy_launch:
     utils.test_linear_schedule(linear_schedule)
 # %%
 def epsilon_greedy_policy(
@@ -230,7 +230,7 @@ def epsilon_greedy_policy(
         pi = action_values.detach().argmax(dim=1).numpy()
     return pi
 
-if MAIN:
+if MAIN and ipy_launch:
     utils.test_epsilon_greedy_policy(epsilon_greedy_policy)
 # %%
 ObsType = np.ndarray
@@ -264,7 +264,7 @@ class Probe1(gym.Env):
         return np.array([0.0])
 
 gym.envs.registration.register(id="Probe1-v0", entry_point=Probe1)
-if MAIN:
+if MAIN and ipy_launch:
     probe1_env = gym.make("Probe1-v0")
     assert probe1_env.observation_space.shape == (1,)
     assert probe1_env.action_space.shape == ()
@@ -351,7 +351,8 @@ class Probe3(gym.Env):
 gym.envs.registration.register(id="Probe3-v0", entry_point=Probe3)
 
 class Probe4(gym.Env):
-    '''Two actions, [0.0] observation, one timestep, reward is -1.0 or +1.0 dependent on the action.
+    '''
+    Two actions, [0.0] observation, one timestep, reward is -1.0 or +1.0 dependent on the action.
 
     We expect the agent to learn to choose the +1.0 action.
     '''
@@ -360,10 +361,15 @@ class Probe4(gym.Env):
     observation_space: Box
 
     def __init__(self):
-        pass
+        super().__init__()
+        self.observation_space = Box(np.array([0.0]), np.array([0.0]))
+        self.action_space = Discrete(2)
+        self.seed()
+        self.reset()
 
     def step(self, action: ActType) -> tuple[ObsType, float, bool, dict]:
-        pass
+        reward = [-1.0, 1.0][action]
+        return np.array([0.0]), reward, True, {}
 
     def reset(
         self, seed: Optional[int] = None, return_info=False, options=None
@@ -555,10 +561,6 @@ def train_dqn(args: DQNArgs):
         actions = epsilon_greedy_policy(envs, q_network, rng, t.tensor(obs, device=device), epsilon)
         (next_obs, rewards, dones, infos) = envs.step(actions)
         buffer.add(obs, actions, rewards, dones, next_obs)
-        real_next_obs = next_obs.copy()
-        for (i, _done) in enumerate(dones):
-            if _done:
-                real_next_obs[i] = infos[i]["terminal_observation"]
         obs = next_obs
         if step > args.learning_starts and step % args.train_frequency == 0:
             '''
