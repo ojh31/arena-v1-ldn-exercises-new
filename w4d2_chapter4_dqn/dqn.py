@@ -290,8 +290,9 @@ class Probe2(gym.Env):
         '''
         return: obs, reward, done, info
         '''
-        obs = reward = -1.0 if self.np_random.rand() < 0.5 else 1.0
-        return (np.array(obs), reward, True, {})
+        reward = self.state
+        self.state = -1.0 if self.np_random.rand() < 0.5 else 1.0
+        return (np.array(self.state), reward, True, {})
 
     def reset(
         self, seed: Optional[int] = None, return_info=False, options=None
@@ -299,9 +300,10 @@ class Probe2(gym.Env):
         '''
         return: obs, info
         '''
+        self.state = -1.0 if self.np_random.rand() < 0.5 else 1.0
         if return_info:
-            return (np.array([1.0]), {})
-        return np.array([1.0])
+            return (np.array([self.state]), {})
+        return np.array([self.state])
 
 gym.envs.registration.register(id="Probe2-v0", entry_point=Probe2)
 
@@ -551,8 +553,8 @@ def train_dqn(args: DQNArgs):
         (next_obs, rewards, dones, infos) = envs.step(actions)
         buffer.add(obs, actions, rewards, dones, next_obs)
         real_next_obs = next_obs.copy()
-        for (i, done) in enumerate(dones):
-            if done:
+        for (i, _done) in enumerate(dones):
+            if _done:
                 real_next_obs[i] = infos[i]["terminal_observation"]
         obs = next_obs
         if step > args.learning_starts and step % args.train_frequency == 0:
@@ -561,8 +563,6 @@ def train_dqn(args: DQNArgs):
             Sample from the replay buffer, compute the TD target, compute TD loss, and 
             perform an optimizer step.
             '''
-            rewards = t.tensor(rewards, device=device)
-            done = t.tensor(done, device=device)
             batch = buffer.sample(args.batch_size, device=device)
             with t.inference_mode():
                 max_q = target_net(batch.next_observations).max(dim=1).values
@@ -571,7 +571,7 @@ def train_dqn(args: DQNArgs):
                 t.arange(args.batch_size, device=device), 
                 batch.actions
             )]
-            y = rewards + args.gamma * max_q * ~done
+            y = batch.rewards + args.gamma * max_q * ~batch.dones
             loss = ((y - predicted_q_vals) ** 2).sum() / len(y)
             loss.backward()
             optimizer.step()
