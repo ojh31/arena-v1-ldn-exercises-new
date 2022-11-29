@@ -329,11 +329,11 @@ class Probe3(gym.Env):
         return: obs, reward, done, info
         '''
         if self.step_count == 0:
-            obs = np.array([0.0])
-            reward = 0
+            obs = np.array([1.0])
+            reward = 0.0
             done = False
         else:
-            obs = np.array([1.0])
+            obs = np.array([0.0])
             reward = 1.0
             done = True
         info = {}
@@ -344,6 +344,9 @@ class Probe3(gym.Env):
         self, seed: Optional[int] = None, return_info=False, options=None
     ) -> Union[ObsType, tuple[ObsType, dict]]:
         self.step_count = 0
+        if return_info:
+            return (np.array([0.0]), {})
+        return np.array([0.0])
 
 gym.envs.registration.register(id="Probe3-v0", entry_point=Probe3)
 
