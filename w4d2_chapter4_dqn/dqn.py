@@ -29,6 +29,7 @@ from w3d5_chapter4_tabular.utils import make_env
 from w4d2_chapter4_dqn import utils
 
 MAIN = __name__ == "__main__"
+ipy_launch = "ipykernel_launcher" in os.path.basename(sys.argv[0])
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 # %%
 class QNetwork(nn.Module):
@@ -50,14 +51,17 @@ class QNetwork(nn.Module):
         x = self.relu2(x)
         x = self.linear3(x)
         return x
-
-if MAIN:
+#%%
+def test_q_network():
     net = QNetwork(dim_observation=4, num_actions=2)
     n_params = sum((p.nelement() for p in net.parameters()))
     print(net)
     print(f"Total number of parameters: {n_params}")
     print("You should manually verify network is Linear-ReLU-Linear-ReLU-Linear")
     assert n_params == 10934
+
+if MAIN:
+    test_q_network()
 # %%
 @dataclass
 class ReplayBufferSamples:
@@ -77,7 +81,7 @@ class ReplayBufferSamples:
     next_observations: t.Tensor
 
 
-
+#%%
 class ReplayBuffer:
     rng: Generator
     observations: t.Tensor
@@ -147,7 +151,7 @@ class ReplayBuffer:
         Sampling is with replacement, and sample_size may be larger than the buffer size.
         '''
         choices = self.rng.integers(
-            0, self.observations.shape[0], sample_size
+            0, self.actions.shape[0], sample_size
         )
         return ReplayBufferSamples(
             observations=self.observations[choices, ...].to(device),
@@ -156,13 +160,13 @@ class ReplayBuffer:
             dones=self.dones[choices, ...].to(device),
             next_observations=self.next_observations[choices, ...].to(device),
         )
-
+#%%
 if MAIN:
     utils.test_replay_buffer_single(ReplayBuffer)
     utils.test_replay_buffer_deterministic(ReplayBuffer)
     utils.test_replay_buffer_wraparound(ReplayBuffer)
-# %%
-if MAIN:
+#%%
+def test_replay_buffer():
     rb = ReplayBuffer(
         buffer_size=256, num_actions=2, observation_shape=(4,), num_environments=1, seed=0
     )
@@ -184,6 +188,9 @@ if MAIN:
     df2 = pd.DataFrame(sample.observations, columns=columns)
     df2.plot(subplots=True, title="Shuffled Replay Buffer")
 # %%
+if MAIN:
+    test_replay_buffer()
+# %%
 def linear_schedule(
     current_step: int, start_e: float, end_e: float, 
     exploration_fraction: float, total_timesteps: int
@@ -199,13 +206,6 @@ def linear_schedule(
     return max(start_e + current_step * (end_e - start_e) / end_step, end_e)
 
 if MAIN:
-    epsilons = [
-        linear_schedule(
-            step, start_e=1.0, end_e=0.05, 
-            exploration_fraction=0.5, total_timesteps=500
-        )
-        for step in range(500)
-    ]
     utils.test_linear_schedule(linear_schedule)
 # %%
 def epsilon_greedy_policy(
@@ -248,7 +248,7 @@ class Probe1(gym.Env):
 
     def __init__(self):
         super().__init__()
-        self.observation_space = Box(np.array([0]), np.array([0]))
+        self.observation_space = Box(np.array([0.0]), np.array([0.0]))
         self.action_space = Discrete(1)
         self.seed()
         self.reset()
@@ -265,12 +265,13 @@ class Probe1(gym.Env):
 
 gym.envs.registration.register(id="Probe1-v0", entry_point=Probe1)
 if MAIN:
-    env = gym.make("Probe1-v0")
-    assert env.observation_space.shape == (1,)
-    assert env.action_space.shape == ()
+    probe1_env = gym.make("Probe1-v0")
+    assert probe1_env.observation_space.shape == (1,)
+    assert probe1_env.action_space.shape == ()
 # %%
 class Probe2(gym.Env):
-    '''One action, observation of [-1.0] or [+1.0], one timestep long, reward equals observation.
+    '''
+    One action, observation of [-1.0] or [+1.0], one timestep long, reward equals observation.
 
     We expect the agent to rapidly learn the value of each observation is equal to the observation.
     '''
@@ -279,20 +280,34 @@ class Probe2(gym.Env):
     observation_space: Box
 
     def __init__(self):
-        pass
+        super().__init__()
+        self.observation_space = Box(np.array([-1.0]), np.array([1.0]))
+        self.action_space = Discrete(1)
+        self.seed()
+        self.reset()
 
     def step(self, action: ActType) -> tuple[ObsType, float, bool, dict]:
-        pass
+        '''
+        return: obs, reward, done, info
+        '''
+        obs = reward = -1.0 if self.np_random.rand() < 0.5 else 1.0
+        return (np.array(obs), reward, True, {})
 
     def reset(
         self, seed: Optional[int] = None, return_info=False, options=None
     ) -> Union[ObsType, tuple[ObsType, dict]]:
-        pass
+        '''
+        return: obs, info
+        '''
+        if return_info:
+            return (np.array([1.0]), {})
+        return np.array([1.0])
 
 gym.envs.registration.register(id="Probe2-v0", entry_point=Probe2)
 
 class Probe3(gym.Env):
-    '''One action, [0.0] then [1.0] observation, two timesteps, +1 reward at the end.
+    '''
+    One action, [0.0] then [1.0] observation, two timesteps, +1 reward at the end.
 
     We expect the agent to rapidly learn the discounted value of the initial observation.
     '''
@@ -301,15 +316,32 @@ class Probe3(gym.Env):
     observation_space: Box
 
     def __init__(self):
-        pass
+        super().__init__()
+        self.observation_space = Box(np.array([0.0]), np.array([1.0]))
+        self.action_space = Discrete(1)
+        self.seed()
+        self.reset()
 
     def step(self, action: ActType) -> tuple[ObsType, float, bool, dict]:
-        pass
+        '''
+        return: obs, reward, done, info
+        '''
+        if self.step_count == 0:
+            obs = np.array([0.0])
+            reward = 0
+            done = False
+        else:
+            obs = np.array([1.0])
+            reward = 1.0
+            done = True
+        info = {}
+        self.step_count += 1
+        return obs, reward, done, info
 
     def reset(
         self, seed: Optional[int] = None, return_info=False, options=None
     ) -> Union[ObsType, tuple[ObsType, dict]]:
-        pass
+        self.step_count = 0
 
 gym.envs.registration.register(id="Probe3-v0", entry_point=Probe3)
 
@@ -331,7 +363,9 @@ class Probe4(gym.Env):
     def reset(
         self, seed: Optional[int] = None, return_info=False, options=None
     ) -> Union[ObsType, tuple[ObsType, dict]]:
-        pass
+        if return_info:
+            return (np.array([0.0]), {})
+        return np.array([0.0])
 
 gym.envs.registration.register(id="Probe4-v0", entry_point=Probe4)
 
@@ -488,39 +522,38 @@ class Experience:
 
 def train_dqn(args: DQNArgs):
     (run_name, writer, rng, device, envs) = setup(args)
+    "Create your Q-network, Adam optimizer, and replay buffer here."
+    print(f'Run={run_name}, device={device}')
     num_actions = envs.single_action_space.n
     dim_observation = envs.observation_space.shape[1]
     num_envs = envs.num_envs
     seed = args.seed
     q_network = QNetwork(
         num_actions=num_actions, dim_observation=dim_observation
-    ).train()
+    ).train().to(device)
     optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
     buffer = ReplayBuffer(args.buffer_size, num_actions, dim_observation, num_envs, seed)
     start_time = time.time()
     obs = envs.reset()
     target_net = QNetwork(
         num_actions=num_actions, dim_observation=dim_observation
-    ).eval()
+    ).eval().to(device)
     for step in range(args.total_timesteps):
         '''
         Sample actions according to the epsilon greedy policy using the linear 
         schedule for epsilon, and then step the environment
         Boilerplate to handle the terminal observation case
         '''
-        target_net.load_state_dict(q_network.state_dict())
         epsilon = linear_schedule(
             step, args.start_e, args.end_e, args.exploration_fraction, args.total_timesteps
         )
-        act = epsilon_greedy_policy(envs, q_network, rng, t.tensor(obs, device=device), epsilon)
-        (next_obs, rewards, dones, infos) = envs.step(act)
+        actions = epsilon_greedy_policy(envs, q_network, rng, t.tensor(obs, device=device), epsilon)
+        (next_obs, rewards, dones, infos) = envs.step(actions)
         buffer.add(obs, actions, rewards, dones, next_obs)
-        envs.step(actions)
         real_next_obs = next_obs.copy()
         for (i, done) in enumerate(dones):
             if done:
                 real_next_obs[i] = infos[i]["terminal_observation"]
-        rb.add(obs, actions, rewards, dones, next_obs)
         obs = next_obs
         if step > args.learning_starts and step % args.train_frequency == 0:
             '''
@@ -538,10 +571,11 @@ def train_dqn(args: DQNArgs):
                 t.arange(args.batch_size, device=device), 
                 batch.actions
             )]
-            y = rewards + args.gamma * max_q * done
+            y = rewards + args.gamma * max_q * ~done
             loss = ((y - predicted_q_vals) ** 2).sum() / len(y)
             loss.backward()
             optimizer.step()
+            optimizer.zero_grad()
             log(writer, start_time, step, predicted_q_vals, loss, infos, epsilon)
         if step % args.target_network_frequency == 0:
             # Update target on this step
@@ -551,23 +585,42 @@ def train_dqn(args: DQNArgs):
     "If running one of the Probe environments, will test if the learned q-values are
     sensible after training. Useful for debugging.
     '''
-    probe_batches = [
-        t.tensor([[0.0]]), t.tensor([[-1.0], [+1.0]]), t.tensor([[0.0], [1.0]]), 
-        t.tensor([[0.0]]), t.tensor([[0.0], [1.0]])
-    ]
-    if re.match(r"Probe(\d)-v0", args.env_id):
-        probe_no = int(re.match(r"Probe(\d)-v0", args.env_id).group(1))
-        batch = probe_batches[probe_no]
+    if args.env_id == "Probe1-v0":
+        batch = t.tensor([[0.0]]).to(device)
         value = q_network(batch)
         print("Value: ", value)
         expected = t.tensor([[1.0]]).to(device)
-        t.testing.assert_close(value, expected, 0.0001)
+        t.testing.assert_close(value, expected, atol=5e-4, rtol=0)
+    elif args.env_id == "Probe2-v0":
+        batch = t.tensor([[-1.0], [+1.0]]).to(device)
+        value = q_network(batch)
+        print("Value:", value)
+        expected = batch
+        t.testing.assert_close(value, expected, atol=5e-4, rtol=0)
+    elif args.env_id == "Probe3-v0":
+        batch = t.tensor([[0.0], [1.0]]).to(device)
+        value = q_network(batch)
+        print("Value: ", value)
+        expected = t.tensor([[args.gamma], [1.0]]).to(device)
+        t.testing.assert_close(value, expected, atol=5e-4, rtol=0)
+    elif args.env_id == "Probe4-v0":
+        batch = t.tensor([[0.0]]).to(device)
+        value = q_network(batch)
+        expected = t.tensor([[-1.0, 1.0]]).to(device)
+        print("Value: ", value)
+        t.testing.assert_close(value, expected, atol=5e-4, rtol=0)
+    elif args.env_id == "Probe5-v0":
+        batch = t.tensor([[0.0], [1.0]]).to(device)
+        value = q_network(batch)
+        expected = t.tensor([[1.0, -1.0], [-1.0, 1.0]]).to(device)
+        print("Value: ", value)
+        t.testing.assert_close(value, expected, atol=1e-3, rtol=0)
 
     envs.close()
     writer.close()
 #%%
 if MAIN:
-    if "ipykernel_launcher" in os.path.basename(sys.argv[0]):
+    if ipy_launch:
         filename = globals().get("__file__", "<filename of this script>")
         print(
             "Try running this file from the command line instead: "

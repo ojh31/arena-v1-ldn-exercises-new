@@ -4,6 +4,7 @@
 *runs/
 *celeba/
 *~
+wandb/*
 */wandb/*
 data/
 */data/*
@@ -11,3 +12,4 @@ data/
 .vscode
 *:Zone.Identifier
 *.DS_Store
+*/.swp
