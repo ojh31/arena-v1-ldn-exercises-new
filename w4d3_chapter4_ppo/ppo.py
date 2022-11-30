@@ -20,7 +20,10 @@ from gym.spaces import Discrete
 from typing import Any, List, Optional, Union, Tuple, Iterable
 from einops import rearrange
 from utils import ppo_parse_args, make_env
+import importlib
+import tests
 
+importlib.reload(tests)
 MAIN = __name__ == "__main__"
 RUNNING_FROM_FILE = "ipykernel_launcher" in os.path.basename(sys.argv[0])
 # %%
@@ -63,7 +66,8 @@ def compute_advantages(
 ) -> t.Tensor:
     '''Compute advantages using Generalized Advantage Estimation.
 
-    next_value: shape (1, env) - represents V(s_{t+1}) which is needed for the last advantage term
+    next_value: shape (1, env) - 
+        represents V(s_{t+1}) which is needed for the last advantage term
     next_done: shape (env,)
     rewards: shape (t, env)
     values: shape (t, env)
@@ -71,15 +75,20 @@ def compute_advantages(
 
     Return: shape (t, env)
     '''
-    adv = 0
-    for to_go in range(values.shape[0]):
-        t = values.shape[0] - to_go
-        if dones[t]:
-            continue
-        next_v = next_value if to_go == 0 else values[t + 1]
-        delta = rewards[t] + gamma * next_v - values[t]
-        adv += delta * (gamma * gae_lambda) ** to_go
+    t_max, n_env = values.shape
+    next_values = t.concat((values[1:, ], next_value))
+    next_dones = t.concat((dones[1:, ], next_done.unsqueeze(0)))
+    deltas = rewards + gamma * next_values * (1.0 - next_dones) - values  
+    adv = deltas.clone().to(device)
+    for to_go in range(1, t_max):
+        t_idx = t_max - to_go - 1
+        t.testing.assert_allclose(adv[t_idx], deltas[t_idx])
+        adv[t_idx] += (
+            gamma * gae_lambda * adv[t_idx + 1] * (1.0 - next_dones[t_idx]) 
+        )
     return adv
 
 if MAIN and RUNNING_FROM_FILE:
-    utils.test_compute_advantages(compute_advantages)
+    tests.test_compute_advantages(compute_advantages)
+    print('Passed test_compute_advantages')
+# %%
