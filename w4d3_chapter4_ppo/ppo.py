@@ -92,3 +92,87 @@ if MAIN and RUNNING_FROM_FILE:
     tests.test_compute_advantages(compute_advantages)
     print('Passed test_compute_advantages')
 # %%
+@dataclass
+class Minibatch:
+    obs: t.Tensor
+    logprobs: t.Tensor
+    actions: t.Tensor
+    advantages: t.Tensor
+    returns: t.Tensor
+    values: t.Tensor
+
+def minibatch_indexes(
+    batch_size: int, minibatch_size: int
+) -> list[np.ndarray]:
+    '''
+    Return a list of length (batch_size // minibatch_size) where 
+    each element is an array of indexes into the batch.
+
+    Each index should appear exactly once.
+    '''
+    assert batch_size % minibatch_size == 0
+    n = batch_size // minibatch_size
+    indices = np.arange(batch_size)
+    np.random.shuffle(indices)
+    return [indices[i::n] for i in range(n)]
+
+if MAIN and RUNNING_FROM_FILE:
+    tests.test_minibatch_indexes(minibatch_indexes)
+
+def make_minibatches(
+    obs: t.Tensor,
+    logprobs: t.Tensor,
+    actions: t.Tensor,
+    advantages: t.Tensor,
+    values: t.Tensor,
+    obs_shape: tuple,
+    action_shape: tuple,
+    batch_size: int,
+    minibatch_size: int,
+) -> list[Minibatch]:
+    '''
+    Flatten the environment and steps dimension into one batch dimension, 
+    then shuffle and split into minibatches.
+    '''
+    n_steps, n_env = values.shape
+    n_dim = n_steps * n_env
+    indexes = minibatch_indexes(batch_size=batch_size, minibatch_size=minibatch_size)
+    obs_flat = obs.reshape(batch_size, obs_shape)
+    act_flat = actions.reshape(batch_size, action_shape)
+    probs_flat = logprobs.reshape(batch_size, action_shape)
+    adv_flat = advantages.reshape(n_dim)
+    val_flat = values.reshape(n_dim)
+    return [
+        Minibatch(
+            obs_flat[idx], probs_flat[idx], act_flat[idx], adv_flat[idx], 
+            adv_flat[idx] + val_flat[idx], val_flat[idx]
+        )
+        for idx in indexes
+    ]
+
+# %%
+def calc_policy_loss(
+    probs: Categorical, mb_action: t.Tensor, mb_advantages: t.Tensor, mb_logprobs: t.Tensor, 
+    clip_coef: float
+) -> t.Tensor:
+    '''
+    Return the policy loss, suitable for maximisation with gradient ascent.
+
+    probs: 
+        a distribution containing the actor's unnormalized logits of 
+        shape (minibatch, num_actions)
+
+    clip_coef: amount of clipping, denoted by epsilon in Eq 7.
+
+    normalize: if true, normalize mb_advantages to have mean 0, variance 1
+    '''
+    adv_norm = (mb_advantages - mb_advantages.mean()) / mb_advantages.std()
+    ratio = t.exp(probs.log_prob(mb_action)) / t.exp(mb_logprobs)
+    min_left = ratio * adv_norm
+    min_right = t.clip(ratio, 1 - clip_coef, 1 + clip_coef) * adv_norm
+    return t.minimum(min_left, min_right).mean()
+
+
+if MAIN and RUNNING_FROM_FILE:
+    tests.test_calc_policy_loss(calc_policy_loss)
+# %%
