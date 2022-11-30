@@ -176,3 +176,30 @@ def calc_policy_loss(
 if MAIN and RUNNING_FROM_FILE:
     tests.test_calc_policy_loss(calc_policy_loss)
 # %%
+def calc_value_function_loss(
+    critic: nn.Sequential, mb_obs: t.Tensor, mb_returns: t.Tensor, v_coef: float
+) -> t.Tensor:
+    '''Compute the value function portion of the loss function.
+
+    v_coef: 
+        the coefficient for the value loss, which weights its contribution to 
+        the overall loss. Denoted by c_1 in the paper.
+    '''
+    output = critic(mb_obs)
+    return v_coef * (output - mb_returns).pow(2).mean() / 2
+
+if MAIN and RUNNING_FROM_FILE:
+    tests.test_calc_value_function_loss(calc_value_function_loss)
+# %%
+def calc_entropy_loss(probs: Categorical, ent_coef: float):
+    '''Return the entropy loss term.
+
+    ent_coef: 
+        The coefficient for the entropy loss, which weights its contribution to the overall loss. 
+        Denoted by c_2 in the paper.
+    '''
+    return probs.entropy().mean() * ent_coef
+
+if MAIN and RUNNING_FROM_FILE:
+    tests.test_calc_entropy_loss(calc_entropy_loss)
+# %%
