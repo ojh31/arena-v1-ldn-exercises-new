@@ -189,6 +189,7 @@ def calc_value_function_loss(
     critic: nn.Sequential, mb_obs: t.Tensor, mb_returns: t.Tensor, v_coef: float
 ) -> t.Tensor:
     '''Compute the value function portion of the loss function.
+    Need to minimise this
 
     v_coef: 
         the coefficient for the value loss, which weights its contribution to 
@@ -202,6 +203,7 @@ if MAIN and RUNNING_FROM_FILE:
 # %%
 def calc_entropy_loss(probs: Categorical, ent_coef: float):
     '''Return the entropy loss term.
+    Need to maximise this
 
     ent_coef: 
         The coefficient for the entropy loss, which weights its contribution to the overall loss. 
@@ -213,7 +215,7 @@ if MAIN and RUNNING_FROM_FILE:
     tests.test_calc_entropy_loss(calc_entropy_loss)
 # %%
 class PPOScheduler:
-    def __init__(self, optimizer, initial_lr: float, end_lr: float, num_updates: int):
+    def __init__(self, optimizer: optim.Adam, initial_lr: float, end_lr: float, num_updates: int):
         self.optimizer = optimizer
         self.initial_lr = initial_lr
         self.end_lr = end_lr
@@ -229,14 +231,15 @@ class PPOScheduler:
             self.initial_lr + 
             (self.end_lr - self.initial_lr) * self.n_step_calls / self.num_updates
         )
-        self.optimizer.lr = lr
+        for param in self.optimizer.param_groups:
+            param['lr'] = lr
         self.n_step_calls += 1
 
 def make_optimizer(
     agent: Agent, num_updates: int, initial_lr: float, end_lr: float
 ) -> tuple[optim.Adam, PPOScheduler]:
     '''Return an appropriately configured Adam with its attached scheduler.'''
-    optimizer = optim.Adam(agent.parameters(), lr=initial_lr)
+    optimizer = optim.Adam(agent.parameters(), lr=initial_lr, maximize=True)
     scheduler = PPOScheduler(
         optimizer=optimizer, initial_lr=initial_lr, end_lr=end_lr, num_updates=num_updates
     )
@@ -323,9 +326,15 @@ def train_ppo(args: PPOArgs):
     for _ in range(num_updates):
         for i in range(0, args.num_steps):
             "YOUR CODE: Rollout phase (see detail #1)"
+            global_step += 1
             curr_obs = next_obs
             done = next_done
-            logprob, action = agent.actor(curr_obs).detach().max(dim=-1)
+            with t.inference_mode():
+                logits = agent.actor(curr_obs).detach()
+                q_values = agent.critic(curr_obs).detach().squeeze(-1)
+            prob = Categorical(logits=logits)
+            action = prob.sample()
+            logprob = prob.log_prob(action)
             next_obs, reward, next_done, info = envs.step(action.numpy())
             next_obs = t.tensor(next_obs, device=device)
             next_done = t.tensor(next_done, device=device)
@@ -334,7 +343,7 @@ def train_ppo(args: PPOArgs):
             logprobs[i] = logprob
             rewards[i] = t.tensor(reward, device=device)
             dones[i] = t.tensor(done, device=device)
-            values[i] = agent.critic(curr_obs).detach().squeeze(-1)
+            values[i] = q_values
 
             for item in info:
                 if "episode" in item.keys():
@@ -342,7 +351,8 @@ def train_ppo(args: PPOArgs):
                     writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
                     break
-        next_value = rearrange(agent.critic(next_obs), "env 1 -> 1 env")
+        with t.inference_mode():
+            next_value = rearrange(agent.critic(next_obs), "env 1 -> 1 env")
         advantages = compute_advantages(
             next_value, next_done, rewards, values, dones, device, args.gamma, args.gae_lambda
         )
@@ -360,12 +370,11 @@ def train_ppo(args: PPOArgs):
                 args.minibatch_size,
             )
             for mb in minibatches:
-                probs = Categorical(logits=mb.logprobs)
-                loss = (
-                    calc_policy_loss(probs, mb.actions, mb.advantages, mb.logprobs, args.clip_coef) +
-                    calc_value_function_loss(agent.critic, mb.obs, mb.returns, args.vf_coef) +
-                    calc_entropy_loss(probs, args.ent_coef)
-                )
+                probs = Categorical(logits=agent.actor(mb.obs))
+                value_loss = calc_value_function_loss(agent.critic, mb.obs, mb.returns, args.vf_coef)
+                policy_loss = calc_policy_loss(probs, mb.actions, mb.advantages, mb.logprobs, args.clip_coef)
+                entropy_loss = calc_entropy_loss(probs, args.ent_coef)
+                loss = policy_loss + entropy_loss - value_loss
                 loss.backward()
                 nn.utils.clip_grad_norm(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
@@ -397,7 +406,7 @@ def train_ppo(args: PPOArgs):
     writer.close()
 
 if MAIN:
-    if "ipykernel_launcher" in os.path.basename(sys.argv[0]):
+    if RUNNING_FROM_FILE:
         filename = globals().get("__file__", "<filename of this script>")
         print(f"Try running this file from the command line instead: python {os.path.basename(filename)} --help")
         args = PPOArgs()
