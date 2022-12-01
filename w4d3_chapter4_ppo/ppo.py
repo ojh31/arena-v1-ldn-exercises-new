@@ -244,6 +244,47 @@ def make_optimizer(
         optimizer=optimizer, initial_lr=initial_lr, end_lr=end_lr, num_updates=num_updates
     )
     return optimizer, scheduler
+
+#%%
+from gym.envs.classic_control.cartpole import CartPoleEnv
+
+class EasyCart(CartPoleEnv):
+    def step(self, action):
+        (obs, rew, done, info) = super().step(action)
+        x, v, a, w = obs
+        cart_pos_factor = 1 - np.abs(x) / 2.4
+        cart_velocity_factor = np.exp(-np.abs(v))
+        pole_angle_factor = 1 - np.abs(a) / 0.2095
+        pole_omega_factor = np.exp(-np.abs(w))
+        rew *= np.array([
+            cart_pos_factor,
+            cart_velocity_factor,
+            pole_angle_factor,
+            pole_omega_factor,
+        ]).mean()
+        return obs, rew, done, info
+
+gym.envs.registration.register(id="EasyCart-v0", entry_point=EasyCart, max_episode_steps=500)
+
+#%%
+class SpinCart(CartPoleEnv):
+
+    def __init__(self):
+        super().__init__()
+        self.theta_threshold_radians = np.inf
+
+    def step(self, action):
+        (obs, rew, done, info) = super().step(action)
+        x, v, a, w = obs
+        pole_angle_factor = -1 + 2.0 / (1 + np.exp(-np.abs(w)))
+        cart_pos_factor = 1 - np.abs(x) / 2.4
+        rew = np.array([
+            cart_pos_factor,
+            pole_angle_factor,
+        ]).mean()
+        return obs, rew, done, info
+
+gym.envs.registration.register(id="SpinCart-v0", entry_point=SpinCart, max_episode_steps=500)
 # %%
 @dataclass
 class PPOArgs:
@@ -256,7 +297,7 @@ class PPOArgs:
     wandb_entity: str = None
     capture_video: bool = False
     env_id: str = "CartPole-v1"
-    total_timesteps: int = 500000
+    total_timesteps: int = 500_000
     learning_rate: float = 0.00025
     num_envs: int = 4
     num_steps: int = 128
@@ -323,6 +364,8 @@ def train_ppo(args: PPOArgs):
     start_time = time.time()
     next_obs = torch.Tensor(envs.reset()).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
+    length_ema = 0
+    ema_alpha = 0.1
     for _ in range(num_updates):
         for i in range(0, args.num_steps):
             "YOUR CODE: Rollout phase (see detail #1)"
@@ -348,8 +391,10 @@ def train_ppo(args: PPOArgs):
             for item in info:
                 if "episode" in item.keys():
                     print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
+                    length_ema = (1 - ema_alpha) * length_ema + ema_alpha * item["episode"]["l"]
                     writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
+                    writer.add_scalar("charts/episodic_length_ema", length_ema, global_step)
                     break
         with t.inference_mode():
             next_value = rearrange(agent.critic(next_obs), "env 1 -> 1 env")
@@ -376,7 +421,7 @@ def train_ppo(args: PPOArgs):
                 entropy_loss = calc_entropy_loss(probs, args.ent_coef)
                 loss = policy_loss + entropy_loss - value_loss
                 loss.backward()
-                nn.utils.clip_grad_norm(agent.parameters(), args.max_grad_norm)
+                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -413,3 +458,6 @@ if MAIN:
     else:
         args = ppo_parse_args()
     train_ppo(args)
+
+
+# %%
