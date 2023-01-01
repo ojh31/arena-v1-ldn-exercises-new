@@ -102,7 +102,7 @@ def fractional_stride_2d(x, stride_h: int, stride_w: int):
     Same as fractional_stride_1d, except we apply it along the last 2 dims of x (width and height).
     '''
     batch, in_channels, height, width = x.shape
-    x_rep = repeat(x, 'b i w  h-> b i (w stride_w) (h stride_h)', stride_w=stride_w, stride_h=stride_h)
+    x_rep = repeat(x, 'b i h w-> b i (h stride_h) (w stride_w)', stride_w=stride_w, stride_h=stride_h)
     width_idx = repeat(t.arange(width * stride_w), 'w -> b i h w', b=batch, i=in_channels, h=height * stride_h)
     height_idx = repeat(t.arange(height * stride_h), 'h -> b i h w', b=batch, i=in_channels, w=width * stride_w)
     x_spaced = x_rep.where((width_idx % stride_w == 0) & (height_idx % stride_h == 0), t.tensor([0]))
@@ -139,12 +139,15 @@ def conv_transpose2d(x, weights, stride: IntOrPair = 1, padding: IntOrPair = 0) 
     Returns: shape (batch, out_channels, output_height, output_width)
     '''
     in_channels, out_channels, kernel_height, kernel_width = weights.shape
-    x_spaced = fractional_stride_2d(x, stride_h=stride, stride_w=stride)
-    pad_x = kernel_width - 1 - padding
-    pad_y = kernel_height - 1 - padding
+    stride_h, stride_w = force_pair(stride)
+    padding_h, padding_w = force_pair(padding)
+    x_spaced = fractional_stride_2d(x, stride_h=stride_h, stride_w=stride_w)
+    pad_x = kernel_width - 1 - padding_w
+    pad_y = kernel_height - 1 - padding_h
     x_padded = pad2d(x_spaced, pad_x, pad_x, pad_y, pad_y, 0)
-    weights_flip = weights.flip([-1])
+    weights_flip = weights.flip([-2, -1])
     weights_flip = rearrange(weights_flip, 'i o kh kw -> o i kh kw')
+    print(x, weights, stride, padding, x_padded, weights_flip)
     return conv2d_minimal(x_padded, weights_flip)
 
 w5d1_tests.test_conv_transpose2d(conv_transpose2d)
