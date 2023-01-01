@@ -38,7 +38,6 @@ def conv_transpose1d_minimal(x: t.Tensor, weights: t.Tensor) -> t.Tensor:
     x_padded = pad1d(x, kernel_width - 1, kernel_width - 1, 0)
     weights_flip = weights.flip([-1])
     weights_flip = rearrange(weights_flip, 'i o k -> o i k')
-    print('w', weights, weights_flip)
     return conv1d_minimal(x_padded, weights_flip)
 
 w5d1_tests.test_conv_transpose1d_minimal(conv_transpose1d_minimal)
@@ -75,6 +74,12 @@ def conv_transpose1d(x, weights, stride: int = 1, padding: int = 0) -> t.Tensor:
     weights: shape (in_channels, out_channels, kernel_width)
     Returns: shape (batch, out_channels, output_width)
     '''
-    pass
+    in_channels, out_channels, kernel_width = weights.shape
+    x_spaced = fractional_stride_1d(x, stride=stride)
+    pad_amt = kernel_width - 1 - padding
+    x_padded = pad1d(x_spaced, pad_amt, pad_amt, 0)
+    weights_flip = weights.flip([-1])
+    weights_flip = rearrange(weights_flip, 'i o k -> o i k')
+    return conv1d_minimal(x_padded, weights_flip)
 
 w5d1_tests.test_conv_transpose1d(conv_transpose1d)
