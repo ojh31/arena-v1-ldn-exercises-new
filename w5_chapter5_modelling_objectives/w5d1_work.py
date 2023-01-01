@@ -83,3 +83,69 @@ def conv_transpose1d(x, weights, stride: int = 1, padding: int = 0) -> t.Tensor:
     return conv1d_minimal(x_padded, weights_flip)
 
 w5d1_tests.test_conv_transpose1d(conv_transpose1d)
+# %%
+IntOrPair = Union[int, tuple[int, int]]
+Pair = tuple[int, int]
+
+def force_pair(v: IntOrPair) -> Pair:
+    '''Convert v to a pair of int, if it isn't already.'''
+    if isinstance(v, tuple):
+        if len(v) != 2:
+            raise ValueError(v)
+        return (int(v[0]), int(v[1]))
+    elif isinstance(v, int):
+        return (v, v)
+    raise ValueError(v)
+#%%
+def fractional_stride_2d(x, stride_h: int, stride_w: int):
+    '''
+    Same as fractional_stride_1d, except we apply it along the last 2 dims of x (width and height).
+    '''
+    batch, in_channels, height, width = x.shape
+    x_rep = repeat(x, 'b i w  h-> b i (w stride_w) (h stride_h)', stride_w=stride_w, stride_h=stride_h)
+    width_idx = repeat(t.arange(width * stride_w), 'w -> b i h w', b=batch, i=in_channels, h=height * stride_h)
+    height_idx = repeat(t.arange(height * stride_h), 'h -> b i h w', b=batch, i=in_channels, w=width * stride_w)
+    x_spaced = x_rep.where((width_idx % stride_w == 0) & (height_idx % stride_h == 0), t.tensor([0]))
+    if stride_w > 1:
+        x_spaced = x_spaced[:, :, :, : 1 - stride_w]
+    if stride_h > 1:
+        x_spaced = x_spaced[:, :, : 1 - stride_h, :]
+    return x_spaced
+
+
+def test_fractional_stride_2d(fractional_stride_2d):
+    x = t.tensor([[[[1, 2, 3], [4, 5, 6]]]])
+    
+    actual = fractional_stride_2d(x, stride_h=1, stride_w=1)
+    expected = x
+    t.testing.assert_close(actual, expected)
+
+    actual = fractional_stride_2d(x, stride_h=2, stride_w=2)
+    expected = t.tensor([[[[1, 0, 2, 0, 3], [0, 0, 0, 0, 0], [4, 0, 5, 0, 6]]]])
+    print(actual.shape, expected.shape)
+    t.testing.assert_close(actual, expected)
+
+    print("All tests in `test_fractional_stride_2d` passed!")
+
+test_fractional_stride_2d(fractional_stride_2d=fractional_stride_2d)
+
+#%%
+
+def conv_transpose2d(x, weights, stride: IntOrPair = 1, padding: IntOrPair = 0) -> t.Tensor:
+    '''
+    Like torch's conv_transpose2d using bias=False
+    x: shape (batch, in_channels, height, width)
+    weights: shape (in_channels, out_channels, kernel_height, kernel_width)
+    Returns: shape (batch, out_channels, output_height, output_width)
+    '''
+    in_channels, out_channels, kernel_height, kernel_width = weights.shape
+    x_spaced = fractional_stride_2d(x, stride_h=stride, stride_w=stride)
+    pad_x = kernel_width - 1 - padding
+    pad_y = kernel_height - 1 - padding
+    x_padded = pad2d(x_spaced, pad_x, pad_x, pad_y, pad_y, 0)
+    weights_flip = weights.flip([-1])
+    weights_flip = rearrange(weights_flip, 'i o kh kw -> o i kh kw')
+    return conv2d_minimal(x_padded, weights_flip)
+
+w5d1_tests.test_conv_transpose2d(conv_transpose2d)
+# %%
