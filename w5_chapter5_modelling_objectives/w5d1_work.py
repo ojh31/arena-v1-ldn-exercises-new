@@ -202,3 +202,132 @@ w5d1_tests.test_Tanh(Tanh)
 w5d1_tests.test_LeakyReLU(LeakyReLU)
 w5d1_tests.test_Sigmoid(Sigmoid)
 # %%
+def initialize_weights(model: nn.Module) -> None:
+    is_batch = 'running_mean' in dir(model)
+    for name, param in model.named_parameters():
+        is_bias = 'bias' in name.lower()
+        if is_batch and not is_bias:
+            nn.init.normal_(param, mean=1, std=np.sqrt(.02))
+        elif not is_batch:
+            nn.init.normal_(param, mean=0, std=np.sqrt(.02))
+# %%
+class Generator(nn.Module):
+    '''
+    Use ReLU activation in generator for all layers except for the output, which uses Tanh.
+    Use batchnorm in both the generator and the discriminator.
+    not applying batchnorm to the generator output layer (i.e. after the conv blocks)
+    4 BatchNorm layers in the generator
+    '''
+
+    def __init__(
+        self,
+        latent_dim_size: int,           # size of the random vector we use for generating outputs, e.g. 100
+        img_size: int,                  # size of the images we're generating, e.g. 64x64
+        img_channels: int,              # indicates RGB images, e.g. 3
+        generator_num_features: int,    # number of channels after first projection and reshaping, e.g. 1024
+        n_layers: int,                  # number of CONV_n layers, e.g. 4
+    ):
+        super.__init__()
+        self.latent_dim_size = latent_dim_size
+        self.img_size = img_size
+        self.img_channels = img_channels
+        self.generator_num_features = generator_num_features
+        self.n_layers = n_layers
+        assert img_size >= 2 ** n_layers
+        self.smallest_size = img_size / (2 ** n_layers) # e.g. 64 / 2^4 = 4
+        self.gen_dim_size = generator_num_features * (self.smallest_size ** 2)
+        blocks = []
+        for i in range(self.n_layers):
+            is_output = i + 1 == self.n_layers
+            in_channels = generator_num_features / (2 ** i)
+            if is_output:
+                out_channels = self.img_channels
+            else:
+                out_channels = generator_num_features / (2 ** (i + 1))
+            conv = ConvTranspose2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+            )
+            blocks.append(conv)
+            blocks.append(BatchNorm2d(out_channels))
+            if is_output:
+                blocks.append(Tanh())
+            else:
+                blocks.append(ReLU())
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, x: t.Tensor):
+        '''
+        x: 100d latent vector, sampled from N(0, I_100)
+        -> 4 * 4 * 1024 linear layer
+        -> 4 transposed convolutions k=4, s=2, p=1
+        '''
+        x = pad1d(x, 0, self.gen_dim_size - self.latent_dim_size)
+        x = x.reshape(self.generator_num_features, self.smallest_size, self.smallest_size)
+        x = self.blocks(x)
+        return x
+
+
+class Discriminator(nn.Module):
+    '''
+    Use LeakyReLU activation in the discriminator for all layers.
+    Use batchnorm in both the generator and the discriminator.
+    not applying batchnorm to the generator output layer and the discriminator input layer
+    '''
+
+    def __init__(
+        self,
+        img_size: int,
+        img_channels: int,
+        generator_num_features: int,
+        n_layers: int,
+    ):
+        super.__init__()
+        self.img_size = img_size
+        self.img_channels = img_channels
+        self.generator_num_features = generator_num_features
+        self.n_layers = n_layers
+        assert img_size >= 2 ** n_layers
+        self.smallest_size = img_size / (2 ** n_layers) # e.g. 64 / 2^4 = 4
+        self.gen_dim_size = generator_num_features * (self.smallest_size ** 2)
+        blocks = []
+        for i in range(self.n_layers):
+            is_input = i == 0
+            is_output = i + 1 == self.n_layers
+            to_go = self.n_layers - i
+            if is_input:
+                in_channels = img_size
+            else:
+                in_channels = generator_num_features / (2 ** to_go)
+            out_channels = generator_num_features / (2 ** (to_go - 1))
+            conv = Conv2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+            )
+            blocks.append(conv)
+            if not is_output:
+                blocks.append(BatchNorm2d(out_channels))
+            blocks.append(LeakyReLU())
+        self.blocks = nn.Sequential(*blocks)
+        self.fc = nn.Linear(self.gen_dim_size, 1)
+
+
+    def forward(self, x: t.Tensor):
+        '''
+        x is an image and we have to decide real/fake
+        '''
+        x = self.blocks(x)
+        x = self.fc(x)
+        x = Sigmoid(x)
+        return x
+
+
+class DCGAN(nn.Module):
+    netD: Discriminator
+    netG: Generator
