@@ -179,20 +179,26 @@ w5d1_tests.test_ConvTranspose2d(ConvTranspose2d)
 #%%
 class Tanh(nn.Module):
     def forward(self, x: t.Tensor) -> t.Tensor:
-        pass
+        return (t.exp(2 * x) - 1) / (t.exp(2 * x) + 1)
+
 
 class LeakyReLU(nn.Module):
+
     def __init__(self, negative_slope: float = 0.01):
-        pass
+        super().__init__()
+        self.negative_slope = negative_slope
+
     def forward(self, x: t.Tensor) -> t.Tensor:
-        pass
+        return x.where(x > 0, x * self.negative_slope)
+
     def extra_repr(self) -> str:
-        pass
+        return f'LeakyReLU({self.negative_slope:.02f})'
 
 class Sigmoid(nn.Module):
     def forward(self, x: t.Tensor) -> t.Tensor:
-        pass
+        return 1.0 / (1.0 + t.exp(-x))
 
 w5d1_tests.test_Tanh(Tanh)
 w5d1_tests.test_LeakyReLU(LeakyReLU)
 w5d1_tests.test_Sigmoid(Sigmoid)
+# %%
