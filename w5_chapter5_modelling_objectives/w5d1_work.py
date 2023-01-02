@@ -16,6 +16,7 @@ from torchvision.datasets import ImageFolder
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 from dataclasses import dataclass
 import wandb
+import numpy as np
 
 # Add to your path here, so you can import the appropriate functions
 sys.path.append('/home/oskar/projects/arena-v1-ldn-exercises-new')
@@ -147,8 +148,51 @@ def conv_transpose2d(x, weights, stride: IntOrPair = 1, padding: IntOrPair = 0) 
     x_padded = pad2d(x_spaced, pad_x, pad_x, pad_y, pad_y, 0)
     weights_flip = weights.flip([-2, -1])
     weights_flip = rearrange(weights_flip, 'i o kh kw -> o i kh kw')
-    print(x, weights, stride, padding, x_padded, weights_flip)
     return conv2d_minimal(x_padded, weights_flip)
 
 w5d1_tests.test_conv_transpose2d(conv_transpose2d)
 # %%
+class ConvTranspose2d(nn.Module):
+
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_size: IntOrPair, 
+        stride: IntOrPair = 1, padding: IntOrPair = 0
+    ):
+        '''
+        Same as torch.nn.ConvTranspose2d with bias=False.
+        Name your weight field `self.weight` for compatibility with the tests.
+        '''
+        super().__init__()
+        kernel_height, kernel_width = force_pair(kernel_size)
+        max_weight = 1 / np.sqrt(out_channels * kernel_height * kernel_width)
+        self.weight = nn.Parameter(
+            t.rand((in_channels, out_channels, kernel_height, kernel_width)) * 
+            2 * max_weight - max_weight
+        )
+        self.stride = stride
+        self.padding = padding
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        return conv_transpose2d(x, self.weight, self.stride, self.padding)
+
+w5d1_tests.test_ConvTranspose2d(ConvTranspose2d)
+#%%
+class Tanh(nn.Module):
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        pass
+
+class LeakyReLU(nn.Module):
+    def __init__(self, negative_slope: float = 0.01):
+        pass
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        pass
+    def extra_repr(self) -> str:
+        pass
+
+class Sigmoid(nn.Module):
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        pass
+
+w5d1_tests.test_Tanh(Tanh)
+w5d1_tests.test_LeakyReLU(LeakyReLU)
+w5d1_tests.test_Sigmoid(Sigmoid)
