@@ -26,6 +26,7 @@ from w0d2_chapter0_convolutions.solutions import (
     pad1d, pad2d, conv1d_minimal, conv2d_minimal, Conv2d, Linear, ReLU
 )
 from w0d3_chapter0_resnets.solutions import BatchNorm2d
+from w5_chapter5_modelling_objectives.w5d1_solutions import celeb_DCGAN
 # %%
 def conv_transpose1d_minimal(x: t.Tensor, weights: t.Tensor) -> t.Tensor:
     '''
@@ -162,6 +163,8 @@ class ConvTranspose2d(nn.Module):
         Same as torch.nn.ConvTranspose2d with bias=False.
         Name your weight field `self.weight` for compatibility with the tests.
         '''
+        assert isinstance(in_channels, int)
+        assert isinstance(out_channels, int)
         super().__init__()
         kernel_height, kernel_width = force_pair(kernel_size)
         max_weight = 1 / np.sqrt(out_channels * kernel_height * kernel_width)
@@ -210,6 +213,14 @@ def initialize_weights(model: nn.Module) -> None:
             nn.init.normal_(param, mean=1, std=np.sqrt(.02))
         elif not is_batch:
             nn.init.normal_(param, mean=0, std=np.sqrt(.02))
+#%%
+dcgan_config = dict(
+    latent_dim_size=100,
+    img_size=64,
+    img_channels=3,
+    generator_num_features=1024,
+    n_layers=4,
+)
 # %%
 class Generator(nn.Module):
     '''
@@ -227,23 +238,23 @@ class Generator(nn.Module):
         generator_num_features: int,    # number of channels after first projection and reshaping, e.g. 1024
         n_layers: int,                  # number of CONV_n layers, e.g. 4
     ):
-        super.__init__()
+        super().__init__()
         self.latent_dim_size = latent_dim_size
         self.img_size = img_size
         self.img_channels = img_channels
         self.generator_num_features = generator_num_features
         self.n_layers = n_layers
         assert img_size >= 2 ** n_layers
-        self.smallest_size = img_size / (2 ** n_layers) # e.g. 64 / 2^4 = 4
+        self.smallest_size = img_size // (2 ** n_layers) # e.g. 64 / 2^4 = 4
         self.gen_dim_size = generator_num_features * (self.smallest_size ** 2)
         blocks = []
         for i in range(self.n_layers):
             is_output = i + 1 == self.n_layers
-            in_channels = generator_num_features / (2 ** i)
+            in_channels = generator_num_features // (2 ** i)
             if is_output:
                 out_channels = self.img_channels
             else:
-                out_channels = generator_num_features / (2 ** (i + 1))
+                out_channels = generator_num_features // (2 ** (i + 1))
             conv = ConvTranspose2d(
                 in_channels=in_channels,
                 out_channels=out_channels,
@@ -285,13 +296,13 @@ class Discriminator(nn.Module):
         generator_num_features: int,
         n_layers: int,
     ):
-        super.__init__()
+        super().__init__()
         self.img_size = img_size
         self.img_channels = img_channels
         self.generator_num_features = generator_num_features
         self.n_layers = n_layers
         assert img_size >= 2 ** n_layers
-        self.smallest_size = img_size / (2 ** n_layers) # e.g. 64 / 2^4 = 4
+        self.smallest_size = img_size // (2 ** n_layers) # e.g. 64 / 2^4 = 4
         self.gen_dim_size = generator_num_features * (self.smallest_size ** 2)
         blocks = []
         for i in range(self.n_layers):
@@ -301,8 +312,8 @@ class Discriminator(nn.Module):
             if is_input:
                 in_channels = img_size
             else:
-                in_channels = generator_num_features / (2 ** to_go)
-            out_channels = generator_num_features / (2 ** (to_go - 1))
+                in_channels = generator_num_features // (2 ** to_go)
+            out_channels = generator_num_features // (2 ** (to_go - 1))
             conv = Conv2d(
                 in_channels=in_channels,
                 out_channels=out_channels,
@@ -331,3 +342,25 @@ class Discriminator(nn.Module):
 class DCGAN(nn.Module):
     netD: Discriminator
     netG: Generator
+
+    def __init__(
+        self, latent_dim_size: int, img_size: int, img_channels: int, generator_num_features: int, 
+        n_layers: int, ) -> None:
+        super().__init__()
+        self.netG = Generator(
+            latent_dim_size=latent_dim_size, img_size=img_size, img_channels=img_channels, 
+            generator_num_features=generator_num_features, n_layers=n_layers,
+        )
+        self.netD = Discriminator(
+            img_size=img_size, 
+            img_channels=img_channels, 
+            generator_num_features=generator_num_features,
+            n_layers=n_layers,
+        )
+        initialize_weights(self.netG)
+        initialize_weights(self.netD)
+
+#%%
+my_DCGAN = DCGAN(**dcgan_config)
+w5d1_utils.print_param_count(my_DCGAN.netG, celeb_DCGAN.netG)
+#%%

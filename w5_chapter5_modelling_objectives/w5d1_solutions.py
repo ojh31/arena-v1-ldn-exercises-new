@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import sys
 from torchvision import transforms, datasets
 
-p = r"C:\Users\calsm\Documents\AI Alignment\ARENA\arena-v1-ldn-exercises-restructured"
+p = r"/home/oskar/projects/arena-v1-ldn-exercises-new"
 # Replace the line above with your own root directory
 os.chdir(p)
 sys.path.append(p)
@@ -26,7 +26,9 @@ device = t.device("cuda:0" if t.cuda.is_available() else "cpu")
 
 import w5d1_utils
 import w5d1_tests
-from w0d2_chapter0_convolutions.solutions import pad1d, pad2d, conv1d_minimal, conv2d_minimal, Conv2d, Linear, ReLU, Pair, IntOrPair
+from w0d2_chapter0_convolutions.solutions import (
+    pad1d, pad2d, conv1d_minimal, conv2d_minimal, Conv2d, Linear, ReLU, Pair, IntOrPair
+)
 from w0d3_chapter0_resnets.solutions import BatchNorm2d, Sequential
 
 MAIN = __name__ == "__main__"
