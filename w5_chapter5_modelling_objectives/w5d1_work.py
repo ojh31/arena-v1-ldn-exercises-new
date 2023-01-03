@@ -318,9 +318,9 @@ class Discriminator(nn.Module):
             is_output = i + 1 == self.n_layers
             to_go = self.n_layers - i
             if is_input:
-                in_channels = img_size
+                in_channels = img_channels
             else:
-                in_channels = generator_num_features // (2 ** to_go)
+                in_channels = generator_num_features // (2 ** (to_go))
             out_channels = generator_num_features // (2 ** (to_go - 1))
             conv = Conv2d(
                 in_channels=in_channels,
@@ -330,12 +330,12 @@ class Discriminator(nn.Module):
                 padding=1,
             )
             block.append(conv)
-            if not is_output:
+            if not is_input:
                 block.append(BatchNorm2d(out_channels))
                 block.append(LeakyReLU())
             blocks.append(nn.Sequential(*block))
         self.blocks = nn.Sequential(*blocks)
-        self.fc = nn.Linear(self.gen_dim_size, 1)
+        self.fc = nn.Linear(self.gen_dim_size, 1, bias=False)
 
 
     def forward(self, x: t.Tensor):
@@ -373,3 +373,6 @@ class DCGAN(nn.Module):
 my_DCGAN = DCGAN(**dcgan_config)
 w5d1_utils.print_param_count(my_DCGAN.netG, celeb_DCGAN.netG)
 #%%
+my_DCGAN = DCGAN(**dcgan_config)
+w5d1_utils.print_param_count(my_DCGAN.netD, celeb_DCGAN.netD)
+# %%
