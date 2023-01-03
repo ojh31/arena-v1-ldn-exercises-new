@@ -247,8 +247,15 @@ class Generator(nn.Module):
         assert img_size >= 2 ** n_layers
         self.smallest_size = img_size // (2 ** n_layers) # e.g. 64 / 2^4 = 4
         self.gen_dim_size = generator_num_features * (self.smallest_size ** 2)
+        self.projection = nn.Sequential(
+            nn.Linear(self.latent_dim_size, self.gen_dim_size, bias=False),
+            Rearrange('b (c h w) -> b c h w', c=self.generator_num_features, h=self.smallest_size),
+            BatchNorm2d(self.generator_num_features),
+            ReLU(),
+        )
         blocks = []
         for i in range(self.n_layers):
+            block = []
             is_output = i + 1 == self.n_layers
             in_channels = generator_num_features // (2 ** i)
             if is_output:
@@ -262,12 +269,13 @@ class Generator(nn.Module):
                 stride=2,
                 padding=1,
             )
-            blocks.append(conv)
-            blocks.append(BatchNorm2d(out_channels))
+            block.append(conv)
             if is_output:
-                blocks.append(Tanh())
+                block.append(Tanh())
             else:
-                blocks.append(ReLU())
+                block.append(BatchNorm2d(out_channels))
+                block.append(ReLU())
+            blocks.append(nn.Sequential(*block))
         self.blocks = nn.Sequential(*blocks)
 
     def forward(self, x: t.Tensor):
@@ -276,8 +284,7 @@ class Generator(nn.Module):
         -> 4 * 4 * 1024 linear layer
         -> 4 transposed convolutions k=4, s=2, p=1
         '''
-        x = pad1d(x, 0, self.gen_dim_size - self.latent_dim_size)
-        x = x.reshape(self.generator_num_features, self.smallest_size, self.smallest_size)
+        x = self.projection(x)
         x = self.blocks(x)
         return x
 
@@ -306,6 +313,7 @@ class Discriminator(nn.Module):
         self.gen_dim_size = generator_num_features * (self.smallest_size ** 2)
         blocks = []
         for i in range(self.n_layers):
+            block = []
             is_input = i == 0
             is_output = i + 1 == self.n_layers
             to_go = self.n_layers - i
@@ -321,10 +329,11 @@ class Discriminator(nn.Module):
                 stride=2,
                 padding=1,
             )
-            blocks.append(conv)
+            block.append(conv)
             if not is_output:
-                blocks.append(BatchNorm2d(out_channels))
-            blocks.append(LeakyReLU())
+                block.append(BatchNorm2d(out_channels))
+                block.append(LeakyReLU())
+            blocks.append(nn.Sequential(*block))
         self.blocks = nn.Sequential(*blocks)
         self.fc = nn.Linear(self.gen_dim_size, 1)
 
