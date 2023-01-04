@@ -337,6 +337,7 @@ class Discriminator(nn.Module):
             blocks.append(nn.Sequential(*block))
         self.blocks = nn.Sequential(*blocks)
         self.fc = nn.Linear(self.gen_dim_size, 1, bias=False)
+        self.sigmoid = Sigmoid()
 
 
     def forward(self, x: t.Tensor):
@@ -344,8 +345,9 @@ class Discriminator(nn.Module):
         x is an image and we have to decide real/fake
         '''
         x = self.blocks(x)
+        x = rearrange(x, 'b c h w -> b (c h w)')
         x = self.fc(x)
-        x = Sigmoid(x)
+        x = self.sigmoid(x)
         return x
 
 
@@ -409,45 +411,73 @@ class DCGANargs():
     track: bool = True
     cuda: bool = True
     seconds_between_image_logs: int = 40
+    scale_factor: int = 8
 
 def train_DCGAN(args: DCGANargs) -> DCGAN:
-    train_loader = DataLoader(args.trainset, batch_size=args.batch_size)
+    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
+    batch_size = args.batch_size // args.scale_factor
+    lr = args.lr / np.sqrt(args.scale_factor)
+    train_loader = DataLoader(args.trainset, batch_size=batch_size)
     net = DCGAN(
         latent_dim_size=args.latent_dim_size,
         img_size=args.img_size,
         img_channels=args.img_channels,
         generator_num_features=args.generator_num_features,
         n_layers=args.n_layers
-    )
-    optimD = t.optim.Adam(net.netD.parameters(), lr=args.lr)
-    optimG = t.optim.Adam(net.netG.parameters(), lr=args.lr)
+    ).train()
+    optimD = t.optim.Adam(net.netD.parameters(), lr=lr, maximize=True)
+    optimG = t.optim.Adam(net.netG.parameters(), lr=lr, maximize=True)
     last_image_log = time.time()
+    image_latent_vector = t.randn(args.latent_dim_size, device=device)
     n_examples_seen = 0
-    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
-    wandb.init(track=args.track)
-    for epoch in args.epochs:
-        for x, y in train_loader:
-            assert y == 0 # these are real images
+    if args.track:
+        wandb.init(
+            project='w5d1_GAN',
+        )
+        wandb.watch(net)
+    for _ in range(args.epochs):
+        for x, y in tqdm(train_loader):
+            x = x.to(device=device)
+            y = y.to(device=device)
+            assert (y == 0).all() # these are all real images so same class
 
             # Discriminator train step
+            net.netD.train()
+            net.netG.eval()
             optimD.zero_grad()
-            z = t.randn(args.latent_dim_size)
-            fake_classes = net.netD(net.netG(z).detach())
+            optimG.zero_grad()
+            zD = t.randn((batch_size, args.latent_dim_size), device=device)
+            fakesD = net.netG(zD)
+            true_negative_reward = t.log(1 - net.netD(fakesD.detach())).mean()
+            true_positive_reward = t.log(net.netD(x)).mean()
+            rewardD = true_negative_reward + true_positive_reward
+            rewardD.backward()
+            optimD.step()
 
             # Generator train step
+            net.netG.train()
+            net.netD.eval()
+            optimD.zero_grad()
             optimG.zero_grad()
-            z = t.randn(args.latent_dim_size)
-            fake_classes = net.netD(net.netG(z))
+            zG = t.randn((batch_size, args.latent_dim_size), device=device)
+            fakesG = net.netG(zG)
+            rewardG = t.log(net.netD(fakesG)).mean()
+            rewardG.backward()
+            optimG.step()
 
-            if time.time() - last_image_log > args.seconds_between_image_logs:
-                arr_rearranged = rearrange(arr, "b c h w -> h (b w) c")
+            long_since_image_log = (
+                time.time() - last_image_log > args.seconds_between_image_logs
+            )
+            if args.track and long_since_image_log:
+                new_image_arr = net.netG(image_latent_vector)
+                arr_rearranged = rearrange(new_image_arr, "b c h w -> h (b w) c")
                 images = wandb.Image(
                     arr_rearranged, 
                     caption="Top: original, Bottom: reconstructed"
                 )
                 wandb.log({"images": images}, step=n_examples_seen)
                 last_image_log = time.time()
-            n_examples_seen += 1
+            n_examples_seen += x.shape[0]
     return net
 #%%
 paper_args = DCGANargs(
@@ -457,10 +487,15 @@ paper_args = DCGANargs(
     generator_num_features=1024,
     n_layers=4,
     lr=0.0002,
-    cuda=False,
-    track=False,
     betas=(0.5, 0.999),
     trainset=trainset,
     batch_size=128,
     epochs=1,
+    track=False,
+    cuda=False,
+    scale_factor=16,
 )
+
+#%%
+model = train_DCGAN(paper_args)
+#%%
