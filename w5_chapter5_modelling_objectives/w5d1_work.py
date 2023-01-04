@@ -60,7 +60,7 @@ def fractional_stride_1d(x, stride: int = 1):
     batch, in_channels, width = x.shape
     x_rep = repeat(x, 'b i w -> b i (w stride)', stride=stride)
     width_idx = repeat(t.arange(width * stride), 'w -> b i w', b=batch, i=in_channels)
-    x_spaced = x_rep.where(width_idx % stride == 0, t.tensor([0]))
+    x_spaced = x_rep.where(width_idx % stride == 0, t.tensor([0], device=x.device))
     x_trim = x_spaced[..., :1-stride] if stride > 1 else x_spaced
     return x_trim
 
@@ -104,11 +104,22 @@ def fractional_stride_2d(x, stride_h: int, stride_w: int):
     '''
     Same as fractional_stride_1d, except we apply it along the last 2 dims of x (width and height).
     '''
+    device = x.device
     batch, in_channels, height, width = x.shape
     x_rep = repeat(x, 'b i h w-> b i (h stride_h) (w stride_w)', stride_w=stride_w, stride_h=stride_h)
-    width_idx = repeat(t.arange(width * stride_w), 'w -> b i h w', b=batch, i=in_channels, h=height * stride_h)
-    height_idx = repeat(t.arange(height * stride_h), 'h -> b i h w', b=batch, i=in_channels, w=width * stride_w)
-    x_spaced = x_rep.where((width_idx % stride_w == 0) & (height_idx % stride_h == 0), t.tensor([0]))
+    width_idx = repeat(
+        t.arange(width * stride_w, device=device), 
+        'w -> b i h w', 
+        b=batch, i=in_channels, h=height * stride_h
+    )
+    height_idx = repeat(
+        t.arange(height * stride_h, device=device), 
+        'h -> b i h w', b=batch, i=in_channels, w=width * stride_w
+    )
+    x_spaced = x_rep.where(
+        (width_idx % stride_w == 0) & (height_idx % stride_h == 0), 
+        t.tensor([0], device=device)
+    )
     if stride_w > 1:
         x_spaced = x_spaced[:, :, :, : 1 - stride_w]
     if stride_h > 1:
@@ -316,7 +327,6 @@ class Discriminator(nn.Module):
         for i in range(self.n_layers):
             block = []
             is_input = i == 0
-            is_output = i + 1 == self.n_layers
             to_go = self.n_layers - i
             if is_input:
                 in_channels = img_channels
@@ -424,9 +434,9 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
         img_channels=args.img_channels,
         generator_num_features=args.generator_num_features,
         n_layers=args.n_layers
-    ).train()
-    optimD = t.optim.Adam(net.netD.parameters(), lr=lr, maximize=True)
-    optimG = t.optim.Adam(net.netG.parameters(), lr=lr, maximize=True)
+    ).train().to(device=device)
+    optD = t.optim.Adam(net.netD.parameters(), lr=lr, maximize=True)
+    optG = t.optim.Adam(net.netG.parameters(), lr=lr, maximize=True)
     last_image_log = time.time()
     image_latent_vector = t.randn(args.latent_dim_size, device=device)
     n_examples_seen = 0
@@ -439,31 +449,23 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
         for x, y in tqdm(train_loader):
             x = x.to(device=device)
             y = y.to(device=device)
+            z = t.randn((batch_size, args.latent_dim_size), device=device)
+            fakes = net.netG(z)
             assert (y == 0).all() # these are all real images so same class
 
             # Discriminator train step
-            net.netD.train()
-            net.netG.eval()
-            optimD.zero_grad()
-            optimG.zero_grad()
-            zD = t.randn((batch_size, args.latent_dim_size), device=device)
-            fakesD = net.netG(zD)
-            true_negative_reward = t.log(1 - net.netD(fakesD.detach())).mean()
+            optD.zero_grad()
+            true_negative_reward = t.log(1 - net.netD(fakes.detach())).mean()
             true_positive_reward = t.log(net.netD(x)).mean()
             rewardD = true_negative_reward + true_positive_reward
             rewardD.backward()
-            optimD.step()
+            optD.step()
 
             # Generator train step
-            net.netG.train()
-            net.netD.eval()
-            optimD.zero_grad()
-            optimG.zero_grad()
-            zG = t.randn((batch_size, args.latent_dim_size), device=device)
-            fakesG = net.netG(zG)
-            rewardG = t.log(net.netD(fakesG)).mean()
+            optG.zero_grad()
+            rewardG = t.log(net.netD(fakes)).mean()
             rewardG.backward()
-            optimG.step()
+            optG.step()
 
             long_since_image_log = (
                 time.time() - last_image_log > args.seconds_between_image_logs
@@ -492,8 +494,8 @@ paper_args = DCGANargs(
     batch_size=128,
     epochs=1,
     track=False,
-    cuda=False,
-    scale_factor=16,
+    cuda=True,
+    scale_factor=32,
 )
 
 #%%
