@@ -17,6 +17,7 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 from dataclasses import dataclass
 import wandb
 import numpy as np
+import time
 
 # Add to your path here, so you can import the appropriate functions
 sys.path.append('/home/oskar/projects/arena-v1-ldn-exercises-new')
@@ -376,3 +377,90 @@ w5d1_utils.print_param_count(my_DCGAN.netG, celeb_DCGAN.netG)
 my_DCGAN = DCGAN(**dcgan_config)
 w5d1_utils.print_param_count(my_DCGAN.netD, celeb_DCGAN.netD)
 # %%
+from torchvision import transforms, datasets
+
+image_size = dcgan_config['img_size']
+transform = transforms.Compose([
+    transforms.Resize((image_size)),
+    transforms.CenterCrop(image_size),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+])
+
+trainset = ImageFolder(
+    root="/home/oskar/projects/arena-v1-ldn-exercises-new/w5_chapter5_modelling_objectives/celebA",
+    transform=transform
+)
+
+w5d1_utils.show_images(trainset, rows=3, cols=5)
+# %%
+@dataclass
+class DCGANargs():
+    latent_dim_size: int
+    img_size: int
+    img_channels: int
+    generator_num_features: int
+    n_layers: int
+    trainset: datasets.ImageFolder
+    lr: float
+    betas: Tuple[float]
+    batch_size: int = 8
+    epochs: int = 1
+    track: bool = True
+    cuda: bool = True
+    seconds_between_image_logs: int = 40
+
+def train_DCGAN(args: DCGANargs) -> DCGAN:
+    train_loader = DataLoader(args.trainset, batch_size=args.batch_size)
+    net = DCGAN(
+        latent_dim_size=args.latent_dim_size,
+        img_size=args.img_size,
+        img_channels=args.img_channels,
+        generator_num_features=args.generator_num_features,
+        n_layers=args.n_layers
+    )
+    optimD = t.optim.Adam(net.netD.parameters(), lr=args.lr)
+    optimG = t.optim.Adam(net.netG.parameters(), lr=args.lr)
+    last_image_log = time.time()
+    n_examples_seen = 0
+    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
+    wandb.init(track=args.track)
+    for epoch in args.epochs:
+        for x, y in train_loader:
+            assert y == 0 # these are real images
+
+            # Discriminator train step
+            optimD.zero_grad()
+            z = t.randn(args.latent_dim_size)
+            fake_classes = net.netD(net.netG(z).detach())
+
+            # Generator train step
+            optimG.zero_grad()
+            z = t.randn(args.latent_dim_size)
+            fake_classes = net.netD(net.netG(z))
+
+            if time.time() - last_image_log > args.seconds_between_image_logs:
+                arr_rearranged = rearrange(arr, "b c h w -> h (b w) c")
+                images = wandb.Image(
+                    arr_rearranged, 
+                    caption="Top: original, Bottom: reconstructed"
+                )
+                wandb.log({"images": images}, step=n_examples_seen)
+                last_image_log = time.time()
+            n_examples_seen += 1
+    return net
+#%%
+paper_args = DCGANargs(
+    latent_dim_size=100,
+    img_size=64,
+    img_channels=3,
+    generator_num_features=1024,
+    n_layers=4,
+    lr=0.0002,
+    cuda=False,
+    track=False,
+    betas=(0.5, 0.999),
+    trainset=trainset,
+    batch_size=128,
+    epochs=1,
+)
