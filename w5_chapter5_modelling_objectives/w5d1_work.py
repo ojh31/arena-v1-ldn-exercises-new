@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import wandb
 import numpy as np
 import time
+import pandas as pd
 
 # Add to your path here, so you can import the appropriate functions
 sys.path.append('/home/oskar/projects/arena-v1-ldn-exercises-new')
@@ -218,13 +219,26 @@ w5d1_tests.test_LeakyReLU(LeakyReLU)
 w5d1_tests.test_Sigmoid(Sigmoid)
 # %%
 def initialize_weights(model: nn.Module) -> None:
-    is_batch = 'running_mean' in dir(model)
+    # They mention at the end of page 3 that all weights were initialized from 
+    # a N(0,0.02) distribution. 
+    # This applies to the convolutional and convolutional transpose layers' weights, but 
+    # the BatchNorm layers' weights should be initialised from N(1, 0.02)
+    # (since 1 is their default value). 
+    # The BatchNorm biases should all be set to zero (which they are by default). 
+    param_names = [name for name, _ in model.named_parameters()]
     for name, param in model.named_parameters():
-        is_bias = 'bias' in name.lower()
-        if is_batch and not is_bias:
-            nn.init.normal_(param, mean=1, std=np.sqrt(.02))
-        elif not is_batch:
-            nn.init.normal_(param, mean=0, std=np.sqrt(.02))
+        is_batch = name.replace('weight', 'bias') in param_names
+        if 'bias' in name:
+            # Batch bias
+            nn.init.constant_(param.data, 0.0)
+        elif is_batch:
+            # Batch weight
+            nn.init.normal_(param.data, 1, .02)
+        elif 'block' in name and '0.weight' in name:
+            # convolutional layer weight
+            nn.init.normal_(param.data, 0, .02)
+        else:
+            assert 'fc' in name or 'projection' in name
 #%%
 dcgan_config = dict(
     latent_dim_size=100,
@@ -425,6 +439,20 @@ class DCGANargs():
     max_examples: int = 5_000
 
 #%%
+def safe_log(x: t.Tensor):
+    return t.log(x).clip(min=-100)
+
+#%%
+def params_as_df(model: nn.Module):
+    return pd.DataFrame(
+    [
+        (name, param.data.mean().cpu().numpy().item(), param.data.std().cpu().numpy().item()) 
+        for name, param in model.named_parameters()
+    ],
+    columns=['name', 'mean', 'std']
+)
+
+#%%
 
 def train_DCGAN(args: DCGANargs) -> DCGAN:
     device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
@@ -438,6 +466,7 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
         generator_num_features=args.generator_num_features,
         n_layers=args.n_layers
     ).train().to(device=device)
+    print(params_as_df(net))
     optD = t.optim.Adam(net.netD.parameters(), lr=lr, maximize=True)
     optG = t.optim.Adam(net.netG.parameters(), lr=lr, maximize=True)
     last_image_log = time.time()
@@ -462,15 +491,16 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
 
             # Discriminator train step
             optD.zero_grad()
-            true_negative_reward = t.log(1 - net.netD(fakes.detach())).mean()
-            true_positive_reward = t.log(net.netD(x)).mean()
+            true_negative_reward = safe_log(1 - net.netD(fakes.detach())).mean()
+            true_positive_reward = safe_log(net.netD(x)).mean()
             rewardD = true_negative_reward + true_positive_reward
             rewardD.backward()
             optD.step()
 
             # Generator train step
             optG.zero_grad()
-            rewardG = t.log(net.netD(fakes)).mean()
+            rewardG = safe_log(net.netD(fakes)).mean()
+            t.nn.utils.clip_grad_norm_(net.netD.parameters(), 1)
             rewardG.backward()
             optG.step()
 
@@ -492,7 +522,7 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
             n_examples_seen += x.shape[0]
             if n_examples_seen > args.max_examples:
                 break
-    return net
+    return net.to(device='cpu')
 #%%
 paper_args = DCGANargs(
     latent_dim_size=100,
@@ -508,10 +538,14 @@ paper_args = DCGANargs(
     track=True,
     cuda=True,
     scale_factor=32,
-    max_examples=50_000,
+    max_examples=10_000,
     seconds_between_image_logs=30,
 )
 
 #%%
 model = train_DCGAN(paper_args)
 #%%
+print(params_as_df(model))
+#%%
+
+# %%
