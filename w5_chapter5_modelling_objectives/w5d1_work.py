@@ -528,14 +528,14 @@ gan_args = DCGANargs(
     img_channels=3,
     generator_num_features=1024,
     n_layers=4,
-    lr=0.25e-4, # 2e-4
+    lr=0.1e-4, # 2e-4 in paper, should be divided by sqrt(16)=4 in theory
     betas=(0.5, 0.999),
     trainset=trainset,
-    batch_size=8,
+    batch_size=8, # 128 in paper
     epochs=1,
     track=True,
     cuda=True,
-    max_examples=50_000,
+    max_examples=200_000,
     seconds_between_image_logs=30,
 )
 
