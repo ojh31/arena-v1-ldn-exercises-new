@@ -420,8 +420,11 @@ class DCGANargs():
     epochs: int = 1
     track: bool = True
     cuda: bool = True
-    seconds_between_image_logs: int = 40
+    seconds_between_image_logs: int = 30
     scale_factor: int = 8
+    max_examples: int = 5_000
+
+#%%
 
 def train_DCGAN(args: DCGANargs) -> DCGAN:
     device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
@@ -438,15 +441,19 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
     optD = t.optim.Adam(net.netD.parameters(), lr=lr, maximize=True)
     optG = t.optim.Adam(net.netG.parameters(), lr=lr, maximize=True)
     last_image_log = time.time()
-    image_latent_vector = t.randn(args.latent_dim_size, device=device)
+    image_latent_vector = t.randn((batch_size, args.latent_dim_size), device=device)
     n_examples_seen = 0
     if args.track:
         wandb.init(
             project='w5d1_GAN',
         )
         wandb.watch(net)
-    for _ in range(args.epochs):
-        for x, y in tqdm(train_loader):
+    for epoch in range(args.epochs):
+        print(f'Starting epoch {epoch + 1}')
+        bar = tqdm(
+            train_loader, total=min(args.max_examples // batch_size, len(train_loader))
+        )
+        for x, y in bar:
             x = x.to(device=device)
             y = y.to(device=device)
             z = t.randn((batch_size, args.latent_dim_size), device=device)
@@ -471,15 +478,20 @@ def train_DCGAN(args: DCGANargs) -> DCGAN:
                 time.time() - last_image_log > args.seconds_between_image_logs
             )
             if args.track and long_since_image_log:
-                new_image_arr = net.netG(image_latent_vector)
-                arr_rearranged = rearrange(new_image_arr, "b c h w -> h (b w) c")
-                images = wandb.Image(
-                    arr_rearranged, 
-                    caption="Top: original, Bottom: reconstructed"
-                )
+                wandb.log(dict(rewardD=rewardD, rewardG=rewardG), step=n_examples_seen)
+                net.netG.train()
+                with t.inference_mode():
+                    new_image_arr = net.netG(image_latent_vector)
+                net.netG.eval()
+                arrays = rearrange(
+                    new_image_arr, "b c h w -> b h w c"
+                ).detach().cpu().numpy()
+                images = [wandb.Image(arr) for arr in arrays]
                 wandb.log({"images": images}, step=n_examples_seen)
                 last_image_log = time.time()
             n_examples_seen += x.shape[0]
+            if n_examples_seen > args.max_examples:
+                break
     return net
 #%%
 paper_args = DCGANargs(
@@ -493,9 +505,11 @@ paper_args = DCGANargs(
     trainset=trainset,
     batch_size=128,
     epochs=1,
-    track=False,
+    track=True,
     cuda=True,
     scale_factor=32,
+    max_examples=50_000,
+    seconds_between_image_logs=30,
 )
 
 #%%
