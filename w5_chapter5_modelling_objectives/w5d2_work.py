@@ -53,9 +53,8 @@ def train_autoencoder(config):
     batch_size = config['batch_size']
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
     testloader = DataLoader(testset, batch_size=batch_size, shuffle=True)
+    example_images, example_labels = next(iter(testloader))
     opt = t.optim.Adam(autoencoder.parameters())
-    example_images = next(iter(testloader))
-    last_image_log = time.time()
 
     if config['track']:
         wandb.init(project='w5d2_autoencoder', config=config)
@@ -63,7 +62,8 @@ def train_autoencoder(config):
     n_examples_seen = 0
     for epoch in range(config['epochs']):
         print(f'Epoch: {epoch + 1}')
-
+        epoch_loss = 0
+        epoch_batches = 0
         for x, y in tqdm(trainloader):
             x = x.to(device=device)
             y = y.to(device=device)
@@ -72,38 +72,41 @@ def train_autoencoder(config):
             loss = ((reconstructed - x) ** 2).sum()
             loss.backward()
             opt.step()
-
-            long_since_image_log = (
-                time.time() - last_image_log > config['seconds_between_image_logs']
-            )
-            if config['track'] and long_since_image_log:
-                autoencoder.eval()
-                with t.inference_mode():
-                    new_image_arr = autoencoder(example_images)
-                autoencoder.train()
-                arrays = rearrange(
-                    new_image_arr, "b c h w -> b h w c"
-                ).detach().cpu().numpy()
-                images = [wandb.Image(arr) for arr in arrays]
-                wandb.log(dict(train_loss=loss, images=images), step=n_examples_seen)
-                last_image_log = time.time()
-
             n_examples_seen += x.shape[0]
+            epoch_loss += loss
+            epoch_batches += 1
+
+        if config['track']:
+            autoencoder.eval()
+            with t.inference_mode():
+                new_image_arr = autoencoder(example_images)
+            autoencoder.train()
+            arrays = rearrange(
+                new_image_arr, "b c h w -> b h w c"
+            ).detach().cpu().numpy()
+            images = [
+                wandb.Image(arr, caption=example_labels[i]) for i, arr in enumerate(arrays)
+            ]
+            wandb.log(
+                dict(
+                    train_loss=epoch_loss / epoch_batches, 
+                    images=images, 
+                ), 
+                step=n_examples_seen
+            )
 
     return autoencoder
 
 #%%
 autoencoder_config = dict(
-    track = False,
+    track = True,
     cuda = False,
-    epochs = 1,
-    device = 'cpu',
+    epochs = 10,
     batch_size = 64,
     img_channels=1,
     img_size=28,
     out_features=100,
     latent_dim_size=5,
-    seconds_between_image_logs=10,
 )
 #%%
 trained_autoencoder = train_autoencoder(autoencoder_config)
