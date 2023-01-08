@@ -290,6 +290,7 @@ class DiffusionArgs:
 class DiffusionModel(nn.Module, ABC):
     image_shape: tuple[int, ...]
     noise_schedule: Optional[NoiseSchedule]
+    max_steps: int
 
     @abstractmethod
     def forward(self, images: t.Tensor, num_steps: t.Tensor) -> t.Tensor:
@@ -362,7 +363,7 @@ def train_tiny_diffuser(
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
     testloader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     opt = t.optim.Adam(model.parameters())
-    noise_schedule = NoiseSchedule(max_steps, device)
+    model.noise_schedule = noise_schedule = NoiseSchedule(max_steps, device)
     example_images, = next(iter(testloader))
     example_images = example_images.to(device=device)
 
@@ -481,4 +482,63 @@ if MAIN:
         args.n_eval_images, args.image_shape
     )))
     model = train_tiny_diffuser(model, args, trainset, testset)
+#%%
+def sample(
+    model: DiffusionModel, n_samples: int, return_all_steps: bool = False
+) -> Union[t.Tensor, list[t.Tensor]]:
+    '''
+    Sample, following Algorithm 2 in the DDPM paper
+
+    model: The trained noise-predictor
+    n_samples: The number of samples to generate
+    return_all_steps: 
+        if true, return a list of the reconstructed tensors generated at 
+        each step, rather than just the final reconstructed image tensor.
+
+    out: 
+        shape (B, C, H, W), the denoised images
+        or (T, B, C, H, W), if return_all_steps=True (where ith element is 
+        batched result of (i+1) steps of sampling)
+    '''
+    schedule = model.noise_schedule
+    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
+    model = model.to(device=device)
+    assert schedule is not None
+    xs = t.zeros(
+        (model.max_steps, n_samples,) + model.image_shape, device=device
+    )
+    x = t.randn((n_samples, ) + model.image_shape).to(device=device)
+    for to_go in range(model.max_steps):
+        step = model.max_steps - to_go
+        z = t.randn(model.image_shape, device=device) if step > 1 else 0
+        alpha = schedule.alpha(step - 1).to(device=device)
+        bar = schedule.alpha_bar(step - 1).to(device=device)
+        beta = schedule.beta(step - 1).to(device=device)
+        t_model = t.full((n_samples,), fill_value=step - 1, device=device)
+        eps = model(x, t_model)
+        x = (1.0 / t.sqrt(alpha)) * (
+            x - ((1 - alpha) / t.sqrt(1 - bar) * eps)
+        ) + t.sqrt(beta) * z
+        xs[to_go] = x
+    if return_all_steps:
+        return xs
+    else:
+        return xs[0, ...].reshape((n_samples, ) + model.image_shape)
+
+
+#%%
+if MAIN:
+    print("Generating multiple images")
+    assert isinstance(model, DiffusionModel)
+    with t.inference_mode():
+        samples = sample(model, 6)
+        samples_denormalized = denormalize_img(samples).cpu()
+    plot_img_grid(samples_denormalized, title="Sample denoised images", cols=3)
+if MAIN:
+    print("Printing sequential denoising")
+    assert isinstance(model, DiffusionModel)
+    with t.inference_mode():
+        samples = sample(model, 1, return_all_steps=True)[::10, 0, :]
+        samples_denormalized = denormalize_img(samples).cpu()
+    plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
 #%%
