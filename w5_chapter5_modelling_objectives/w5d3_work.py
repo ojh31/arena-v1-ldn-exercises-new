@@ -188,6 +188,19 @@ class NoiseSchedule(nn.Module):
         '''
         return self.alpha_bars[num_steps]
 
+    def alpha_bar_like(
+        self, img: t.Tensor, num_steps: Union[int, t.Tensor],
+    ) -> t.Tensor:
+        assert isinstance(img, t.Tensor)
+        c, h, w = img.shape[-3:]
+        return repeat(
+            self.alpha_bar(num_steps),
+            'b -> b c h w',
+            c=c,
+            h=h,
+            w=w,
+        )
+
     def __len__(self) -> int:
         return self.max_steps
 
@@ -210,20 +223,14 @@ def noise_img(
     noise: the unscaled, standard Gaussian noise added to each image, a tensor of shape (B, C, H, W)
     noised: the final noised image, a tensor of shape (B, C, H, W)
     '''
+    assert isinstance(img, t.Tensor)
     num_steps = t.randint_like(
         img[:, 0, 0, 0], 0, noise_schedule.max_steps, dtype=t.long
     )
     if max_steps is not None:
         num_steps = t.min(num_steps, t.ones_like(num_steps) * max_steps)
     noise = t.randn_like(img)
-    b, c, h, w = img.shape
-    alpha_bar = repeat(
-        noise_schedule.alpha_bar(num_steps),
-        'b -> b c h w', 
-        c=c,
-        h=h,
-        w=w,
-    )
+    alpha_bar = noise_schedule.alpha_bar_like(img, num_steps)
     noised = (
         t.sqrt(alpha_bar) * img + 
         t.sqrt(1 - alpha_bar) * noise
@@ -250,9 +257,10 @@ def reconstruct(
 
     Returns img, a tensor with shape (B, C, H, W)
     '''
+    alpha_bar = noise_schedule.alpha_bar_like(noisy_img, num_steps)
     return (
-        noisy_img - np.sqrt(1 - noise_schedule.alpha_bar(num_steps)) * noise
-    ) / np.sqrt(noise_schedule.alpha_bar(num_steps))
+        noisy_img - t.sqrt(1 - alpha_bar) * noise
+    ) / t.sqrt(alpha_bar)
 
 if MAIN:
     reconstructed = reconstruct(noised, noise, num_steps, noise_schedule)
@@ -355,7 +363,8 @@ def train_tiny_diffuser(
     testloader = DataLoader(testset, batch_size=batch_size, shuffle=True)
     opt = t.optim.Adam(model.parameters())
     noise_schedule = NoiseSchedule(max_steps, device)
-    example_images = next(iter(testloader))
+    example_images, = next(iter(testloader))
+    example_images = example_images.to(device=device)
 
     if args.track:
         wandb.init(project=args.project, config=args.__dict__)
@@ -371,13 +380,7 @@ def train_tiny_diffuser(
             x0 = x0.to(device=device)
             num_steps, noise, noised = noise_img(x0, noise_schedule)
             b, c, h, w = x0.shape
-            alpha_bar = repeat(
-                noise_schedule.alpha_bar(num_steps),
-                'b -> b c h w',
-                c=c,
-                h=h,
-                w=w,
-            )
+            alpha_bar = noise_schedule.alpha_bar_like(x0, num_steps)
             x0_scaled = t.sqrt(alpha_bar) * x0 + t.sqrt(1 - alpha_bar) * noise
             eps_model = model(x0_scaled, num_steps)
             loss = ((noise - eps_model) ** 2).sum()
@@ -393,8 +396,8 @@ def train_tiny_diffuser(
                 num_steps, noise, noised = noise_img(
                     example_images, noise_schedule
                 )
-                example_bar = noise_schedule.alpha_bar(num_steps)
-                example_scaled = t.sqrt(example_bar) * x0 + t.sqrt(1 - example_bar) * noise
+                example_bar = noise_schedule.alpha_bar_like(example_images, num_steps)
+                example_scaled = t.sqrt(example_bar) * example_images + t.sqrt(1 - example_bar) * noise
                 model.eval()
                 with t.inference_mode():
                     noise_model = model(example_scaled, num_steps)
@@ -411,10 +414,10 @@ def train_tiny_diffuser(
                 )
                 last_image_log = time.time()
 
-            if args.track:
-                wandb.log(dict(
-                    train_loss=epoch_loss / len(trainloader)
-                ), step=n_examples_seen)
+        if args.track:
+            wandb.log(dict(
+                train_loss=epoch_loss / len(trainloader)
+            ), step=n_examples_seen)
 
         model.eval()
         test_loss = 0
@@ -461,8 +464,9 @@ def log_images(
 if MAIN:
     args = DiffusionArgs(
         project='w5d3_tiny_diffuser',
-        epochs=2,
-        track=False,
+        epochs=10,
+        track=True,
+        seconds_between_image_logs=1,
     ) # This shouldn't take long to train
     model_config = TinyDiffuserConfig(
         args.image_shape,

@@ -22,7 +22,7 @@ from fancy_einsum import einsum
 MAIN = __name__ == "__main__"
 
 import sys, os
-p = r"/home/ubuntu/arena-v2-exercises" # CHANGE THIS TO YOUR PATH
+p = r"/home/oskar/projects/arena-v1-ldn-exercises-new" # CHANGE THIS TO YOUR PATH
 os.chdir(p)
 sys.path.append(p)
 # os.environ["WANDB_MODE"] = "dryrun"
