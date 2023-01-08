@@ -195,7 +195,8 @@ class NoiseSchedule(nn.Module):
         return f"max_steps={self.max_steps}"
 # %%
 def noise_img(
-    img: t.Tensor, noise_schedule: NoiseSchedule, max_steps: Optional[int] = None
+    img: t.Tensor, noise_schedule: NoiseSchedule, 
+    max_steps: Optional[int] = None
 ) -> tuple[t.Tensor, t.Tensor, t.Tensor]:
     '''
     Adds a uniform random number of steps of noise to each image in img.
@@ -209,14 +210,23 @@ def noise_img(
     noise: the unscaled, standard Gaussian noise added to each image, a tensor of shape (B, C, H, W)
     noised: the final noised image, a tensor of shape (B, C, H, W)
     '''
-    if max_steps is None:
-        num_steps = t.randint(0, noise_schedule.max_steps, img.shape[0])
-    else:
-        num_steps = t.ones(img.shape[0], dtype=t.long) * max_steps
+    num_steps = t.randint_like(
+        img[:, 0, 0, 0], 0, noise_schedule.max_steps, dtype=t.long
+    )
+    if max_steps is not None:
+        num_steps = t.min(num_steps, t.ones_like(num_steps) * max_steps)
     noise = t.randn_like(img)
+    b, c, h, w = img.shape
+    alpha_bar = repeat(
+        noise_schedule.alpha_bar(num_steps),
+        'b -> b c h w', 
+        c=c,
+        h=h,
+        w=w,
+    )
     noised = (
-        np.sqrt(noise_schedule.alpha_bar(num_steps)) * img + 
-        np.sqrt(1 - noise_schedule.alpha_bar(num_steps)) * noise
+        t.sqrt(alpha_bar) * img + 
+        t.sqrt(1 - alpha_bar) * noise
     )
     assert noise.shape == img.shape
     assert noised.shape == img.shape
@@ -252,9 +262,11 @@ if MAIN:
     t.testing.assert_close(denorm, img)
 # %%
 @dataclass
-class DiffusionArgs():
+class DiffusionArgs:
+    project: str
     lr: float = 0.001
     image_shape: tuple = (3, 4, 5)
+    hidden_size: int = 128
     epochs: int = 10
     max_steps: int = 100
     batch_size: int = 128
@@ -264,6 +276,8 @@ class DiffusionArgs():
     n_eval_images: int = 1000
     cuda: bool = True
     track: bool = True
+    seed: int = 0
+    
 
 class DiffusionModel(nn.Module, ABC):
     image_shape: tuple[int, ...]
@@ -292,9 +306,9 @@ class TinyDiffuser(DiffusionModel):
         self.max_steps = config.max_steps
         self.flatten_dim = np.prod(self.image_shape)
         c, h, w = self.image_shape
+        self.flattener = Rearrange('b c h w -> b (c h w)')
         self.mlp = nn.Sequential(
-            Rearrange('b c h w -> b (c h w)'),
-            nn.Linear(self.flatten_dim, self.hidden_size),
+            nn.Linear(self.flatten_dim + 1, self.hidden_size),
             nn.ReLU(),
             nn.Linear(self.hidden_size, self.flatten_dim),
             Rearrange('b (c h w) -> b c h w', c=c, h=h, w=w)
@@ -302,13 +316,18 @@ class TinyDiffuser(DiffusionModel):
 
     def forward(self, images: t.Tensor, num_steps: t.Tensor) -> t.Tensor:
         '''
-        Given a batch of images and noise steps applied, attempt to predict the noise that was applied.
+        Given a batch of images and noise steps applied, attempt to 
+        predict the noise that was applied.
         images: tensor of shape (B, C, H, W)
         num_steps: tensor of shape (B,)
 
         Returns
         noise_pred: tensor of shape (B, C, H, W)
         '''
+        flat = self.flattener(images)
+        time = (num_steps / self.max_steps).unsqueeze(1)
+        flat = t.cat((flat.T, time.T)).T
+        return self.mlp(flat)
         
 
 if MAIN:
@@ -320,3 +339,142 @@ if MAIN:
     model = TinyDiffuser(model_config)
     out = model(imgs, n_steps)
     plot_img(out[0].detach(), "Noise prediction of untrained model")
+#%%
+def train_tiny_diffuser(
+    model: DiffusionModel, 
+    args: DiffusionArgs, 
+    trainset: TensorDataset,
+    testset: Optional[TensorDataset] = None
+) -> DiffusionModel:
+    t.manual_seed(args.seed)
+    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
+    model = model.to(device=device)
+    batch_size = args.batch_size
+    max_steps = args.max_steps
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
+    testloader = DataLoader(testset, batch_size=batch_size, shuffle=True)
+    opt = t.optim.Adam(model.parameters())
+    noise_schedule = NoiseSchedule(max_steps, device)
+    example_images = next(iter(testloader))
+
+    if args.track:
+        wandb.init(project=args.project, config=args.__dict__)
+
+    n_examples_seen = 0
+    last_image_log = time.time()
+    for epoch in range(args.epochs):
+        print(f'Epoch: {epoch + 1}')
+        epoch_loss = 0
+        model.train()
+        for x0, in tqdm(trainloader):
+            opt.zero_grad()
+            x0 = x0.to(device=device)
+            num_steps, noise, noised = noise_img(x0, noise_schedule)
+            b, c, h, w = x0.shape
+            alpha_bar = repeat(
+                noise_schedule.alpha_bar(num_steps),
+                'b -> b c h w',
+                c=c,
+                h=h,
+                w=w,
+            )
+            x0_scaled = t.sqrt(alpha_bar) * x0 + t.sqrt(1 - alpha_bar) * noise
+            eps_model = model(x0_scaled, num_steps)
+            loss = ((noise - eps_model) ** 2).sum()
+            loss.backward()
+            opt.step()
+            n_examples_seen += batch_size
+            epoch_loss += loss
+
+            long_since_image_log = (
+                time.time() - last_image_log > args.seconds_between_image_logs
+            )
+            if args.track and long_since_image_log:
+                num_steps, noise, noised = noise_img(
+                    example_images, noise_schedule
+                )
+                example_bar = noise_schedule.alpha_bar(num_steps)
+                example_scaled = t.sqrt(example_bar) * x0 + t.sqrt(1 - example_bar) * noise
+                model.eval()
+                with t.inference_mode():
+                    noise_model = model(example_scaled, num_steps)
+                model.train()
+                reconstructed = reconstruct(noised, noise_model, num_steps, noise_schedule)
+                wandb_images = log_images(
+                    example_images, noised, noise, noise_model, reconstructed,
+                )
+                wandb.log(
+                    dict(
+                        images=wandb_images, 
+                    ), 
+                    step=n_examples_seen
+                )
+                last_image_log = time.time()
+
+            if args.track:
+                wandb.log(dict(
+                    train_loss=epoch_loss / len(trainloader)
+                ), step=n_examples_seen)
+
+        model.eval()
+        test_loss = 0
+        for x0, in testloader:
+            x0 = x0.to(device=device)
+            num_steps, noise, noised = noise_img(x0, noise_schedule)
+            alpha_bar = repeat(
+                noise_schedule.alpha_bar(num_steps),
+                'b -> b c h w',
+                c=c,
+                h=h,
+                w=w,
+            )
+            x0_scaled = t.sqrt(alpha_bar) * x0 + t.sqrt(1 - alpha_bar) * noise
+            with t.inference_mode():
+                eps_model = model(x0_scaled, num_steps)
+            loss = ((noise - eps_model) ** 2).sum()
+            test_loss += loss
+        if args.track:
+            wandb.log(dict(
+                train_loss=epoch_loss / len(trainloader)
+            ), step=n_examples_seen)
+            
+    return model.eval().to(device='cpu')
+# %%
+def log_images(
+    img: t.Tensor, noised: t.Tensor, noise: t.Tensor, noise_pred: t.Tensor, 
+    reconstructed: t.Tensor, num_images: int = 3
+) -> list[wandb.Image]:
+    '''
+    Convert tensors to a format suitable for logging to Weights and Biases. 
+    Returns an image with the ground truth in the upper row, and 
+    model reconstruction on the bottom row. 
+    Left is the noised image, middle is noise, and reconstructed image is 
+    in the rightmost column.
+    '''
+    actual = t.cat((noised, noise, img), dim=-1)
+    pred = t.cat((noised, noise_pred, reconstructed), dim=-1)
+    log_img = t.cat((actual, pred), dim=-2)
+    images = [wandb.Image(i) for i in log_img[:num_images]]
+    return images
+
+#%%
+if MAIN:
+    args = DiffusionArgs(
+        project='w5d3_tiny_diffuser',
+        epochs=2,
+        track=False,
+    ) # This shouldn't take long to train
+    model_config = TinyDiffuserConfig(
+        args.image_shape,
+        args.hidden_size,
+        args.max_steps,
+    )
+    model = TinyDiffuser(model_config).to(device).train()
+    trainset = TensorDataset(normalize_img(gradient_images(
+        args.n_images, args.image_shape
+    )))
+    testset = TensorDataset(normalize_img(gradient_images(
+        args.n_eval_images, args.image_shape
+    )))
+    model = train_tiny_diffuser(model, args, trainset, testset)
+#%%
