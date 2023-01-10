@@ -635,6 +635,7 @@ class PositionalEncodingOld(nn.Module):
 class PositionalEncoding(nn.Module):
 
     def __init__(self, max_steps: int, embedding_dim: int):
+        super().__init__()
         self.max_steps = max_steps
         self.embedding_dim = embedding_dim
 
@@ -644,6 +645,7 @@ class PositionalEncoding(nn.Module):
         Out: shape (batch, embedding_dim)
         '''
         batch, = x.shape
+        assert (x <= self.max_steps).all()
         embedding_idx = repeat(
             t.arange(self.embedding_dim), 
             'e -> b e', 
@@ -651,6 +653,113 @@ class PositionalEncoding(nn.Module):
         )
         return t.where(
             embedding_idx % 2 == 0,
-            t.sin(pos_idx / t.pow(seq_len, embedding_idx / embedding_dim)),
-            t.cos(pos_idx / t.pow(seq_len, (embedding_idx - 1) / embedding_dim))
+            t.sin(x / t.pow(10_000, embedding_idx / self.embedding_dim)),
+            t.cos(x / t.pow(10_000, (embedding_idx - 1) / self.embedding_dim))
         )
+# %%
+def swish(x: t.Tensor) -> t.Tensor:
+    return x / (1 + t.exp(-x))
+
+class SiLU(nn.Module):
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        return swish(x)
+
+if MAIN:
+    "YOUR CODE HERE, TO PLOT FUNCTION"
+    x_swish = t.linspace(-10, 10, 1_000)
+    y_swish = swish(x_swish)
+    fig = px.line(x=x_swish, y=y_swish)
+    fig.update_layout(title='Sigmoid Linear Unit (swish)', title_x=0.5)
+    fig.show()
+
+# %%
+def multihead_masked_attention(
+    Q: t.Tensor, K: t.Tensor, V: t.Tensor, num_heads: int
+):
+    '''
+    Implements multihead masked attention on the matrices Q, K and V.
+    Q: shape (batch, seq, nheads*headsize)
+    K: shape (batch, seq, nheads*headsize)
+    V: shape (batch, seq, nheads*headsize)
+    returns: shape (batch, seq, nheads*headsize)
+    '''
+    new_Q = rearrange(Q, 'batch seq (nheads headsize) -> batch nheads seq headsize', nheads=num_heads)
+    new_K = rearrange(K, 'batch seq (nheads headsize) -> batch nheads seq headsize', nheads=num_heads)
+    new_V = rearrange(V, 'batch seq (nheads headsize) -> batch nheads seq headsize', nheads=num_heads)
+
+    attention_scores = einsum('batches nheads seq_Q head_size, batches nheads seq_K head_size -> batches nheads seq_Q seq_K', new_Q, new_K)
+    batches, _, seq_Q, head_size = new_Q.shape
+    batches, _, seq_K, head_size = new_K.shape
+    attention_probabilities = nn.functional.softmax(
+        attention_scores / np.sqrt(head_size), dim=-1
+    )
+    attention_values = einsum(
+        'batches nheads seq_Q seq_K, batches nheads seq_K head_size -> batches seq_Q nheads head_size', 
+        attention_probabilities, 
+        new_V
+    )
+    return rearrange(
+        attention_values, 
+        'batches seq_Q nheads head_size -> batches seq_Q (nheads head_size)'
+    )
+
+# %%
+class MultiheadMaskedAttention(nn.Module):
+    W_QKV: nn.Linear
+    W_O: nn.Linear
+
+    def __init__(self, hidden_size: int, num_heads: int):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        assert self.hidden_size % self.num_heads == 0
+        self.W_QKV = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
+        self.W_O = nn.Linear(hidden_size, hidden_size, bias=True)
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        '''
+        x: shape (batch, seq, hidden_size)
+        Return: shape (batch, seq, hidden_size)
+        '''
+        QKV = self.W_QKV(x)
+        Q = QKV[..., :self.hidden_size]
+        K = QKV[..., self.hidden_size:-self.hidden_size]
+        V = QKV[..., -self.hidden_size:]
+        attention_values = multihead_masked_attention(Q, K, V, self.num_heads)
+        attention_times_o = self.W_O(attention_values)
+        return attention_times_o
+# %%
+class SelfAttention(nn.Module):
+    W_QKV: Linear
+    W_O: Linear
+
+    def __init__(self, channels: int, num_heads: int = 4):
+        '''
+        Self-Attention with two spatial dimensions.
+
+        channels: the number of channels. 
+        num_heads: number of attention heads
+        Channels should be divisible by the number of heads.
+        '''
+        super().__init__()
+        assert channels % num_heads == 0
+        self.W_QKV = nn.Linear(channels, 3 * channels, bias=True)
+        self.W_O = nn.Linear(channels, channels, bias=True)
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        '''
+        x: shape (batch, channels, height, width)
+        out: shape (batch, channels, height, width)
+        '''
+        b, c, h, w = x.shape
+        assert c == self.channels
+        QKV = self.W_QKV(x)
+        Q = QKV[..., :self.hidden_size]
+        K = QKV[..., self.hidden_size:-self.hidden_size]
+        V = QKV[..., -self.hidden_size:]
+        attention_values = multihead_masked_attention(Q, K, V, self.num_heads)
+        attention_times_o = self.W_O(attention_values)
+        return attention_times_o
+
+if MAIN:
+    w5d3_tests.test_self_attention(SelfAttention)
