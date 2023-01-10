@@ -541,4 +541,116 @@ if MAIN:
         samples = sample(model, 1, return_all_steps=True)[::10, 0, :]
         samples_denormalized = denormalize_img(samples).cpu()
     plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
+#%% [markdown] 
+#### The DDPM Architecture
+
 #%%
+class GroupNorm(nn.Module):
+
+    def __init__(
+        self, num_groups, num_channels, eps=1e-05, affine=True, device=None, 
+        dtype=None
+    ) -> None:
+        super().__init__()
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.eps = eps
+        self.affine = affine
+        self.device = device
+        assert num_channels % num_groups == 0, (
+            f'num_groups={num_groups}, num_channels={num_channels} '
+            'do not divide'
+        )
+        self.group_size = num_channels // num_groups
+        self.groups_to_channels = [
+            list(range(g * self.group_size, (g + 1) * self.group_size)) 
+            for g in range(num_groups)
+        ]
+        if self.affine:
+            self.weight = nn.Parameter(t.ones(
+                self.num_channels, device=device, dtype=dtype
+            ))
+            self.bias = nn.Parameter(t.zeros(
+                self.num_channels, device=device, dtype=dtype
+            ))
+
+    def forward(self, x: t.Tensor):
+        '''
+        x: shape b c h w
+        '''
+        b, c, h, w = x.shape
+        assert c == self.num_channels
+        mean = t.zeros_like(x)
+        var = t.ones_like(x)
+        for channels in self.groups_to_channels:
+            channel_mean = x[:, channels, :, :].mean(dim=(1, 2, 3), keepdim=True)
+            channel_var = x[:, channels, :, :].var(unbiased=False, dim=(1, 2, 3), keepdim=True)
+            mean[:, channels, :, :] = channel_mean
+            var[:, channels, :, :] = channel_var
+        normalised = (x - mean) / t.sqrt(var + self.eps) 
+        if self.affine:
+            weight = repeat(self.weight, 'c -> b c h w', b=b, h=h, w=w)
+            bias = repeat(self.bias, 'c -> b c h w', b=b, h=h, w=w)
+            return normalised * weight + bias
+        else:
+            return normalised
+
+if MAIN:
+    w5d3_tests.test_groupnorm(GroupNorm, affine=False)
+    w5d3_tests.test_groupnorm(GroupNorm, affine=True)
+
+
+# %%
+class PositionalEncodingOld(nn.Module):
+
+    def __init__(self, max_seq_len: int, embedding_dim: int):
+        super().__init__()
+        self.max_seq_len = max_seq_len # same as base above
+        self.embedding_dim = embedding_dim # same as D above
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        """
+        x: shape (batch, seq_len, embedding_dim)
+        output: shape (batch, seq_len, embedding_dim)
+        """
+        batch, seq_len, embedding_dim = x.shape
+        embedding_idx = repeat(
+            t.arange(embedding_dim), 
+            'e -> b s e', 
+            s=seq_len, 
+            b=batch
+        )
+        pos_idx = repeat(
+            t.arange(seq_len), 
+            's -> b s e', 
+            e=embedding_idx, 
+            b=batch,
+        )
+        return t.where(
+            embedding_idx % 2 == 0,
+            t.sin(pos_idx / t.pow(seq_len, embedding_idx / embedding_dim)),
+            t.cos(pos_idx / t.pow(seq_len, (embedding_idx - 1) / embedding_dim))
+        )
+# %%
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, max_steps: int, embedding_dim: int):
+        self.max_steps = max_steps
+        self.embedding_dim = embedding_dim
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        '''
+        x: shape (batch,) - for each batch element, the number of noise steps
+        Out: shape (batch, embedding_dim)
+        '''
+        batch, = x.shape
+        embedding_idx = repeat(
+            t.arange(self.embedding_dim), 
+            'e -> b e', 
+            b=batch
+        )
+        return t.where(
+            embedding_idx % 2 == 0,
+            t.sin(pos_idx / t.pow(seq_len, embedding_idx / embedding_dim)),
+            t.cos(pos_idx / t.pow(seq_len, (embedding_idx - 1) / embedding_dim))
+        )
