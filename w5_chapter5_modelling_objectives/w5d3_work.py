@@ -781,3 +781,167 @@ class SelfAttention(nn.Module):
 if MAIN:
     w5d3_tests.test_self_attention(SelfAttention)
 #%%
+class AttentionBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.channels = channels
+        self.attention = SelfAttention(channels=channels)
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        return self.attention(x)
+
+if MAIN:
+    w5d3_tests.test_attention_block(SelfAttention)
+
+#%%
+class ResidualBlock(nn.Module):
+    def __init__(
+        self, input_channels: int, output_channels: int, step_dim: int, groups: int
+    ):
+        '''
+        input_channels: number of channels in the input to forward
+        output_channels: number of channels in the returned output
+        step_dim: embedding dimension size for the number of steps
+        groups: number of groups in the GroupNorms
+
+        Note that the conv in the left branch is needed if c_in != c_out.
+        '''
+        super().__init__()
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.step_dim = step_dim
+        self.groups = groups
+        self.one_by_one = nn.Conv2d(
+            in_channels=input_channels,
+            out_channels=output_channels,
+            kernel_size=1,
+        )
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=input_channels,
+                out_channels=output_channels,
+                kernel_size=3,
+                padding=1,
+            ),
+            GroupNorm(num_groups=groups, num_channels=output_channels),
+            SiLU(),
+        )
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=output_channels,
+                out_channels=output_channels,
+                kernel_size=3,
+                padding=1,
+            ),
+            GroupNorm(num_groups=groups, num_channels=output_channels),
+            SiLU(),
+        )
+        self.linear_steps = nn.Sequential(
+            SiLU(),
+            nn.Linear(step_dim, output_channels),
+        )
+
+    def forward(self, x: t.Tensor, time_emb: t.Tensor) -> t.Tensor:
+        '''
+        x: shape b c h w
+
+        Note that the output of the (silu, linear) block should be of shape (batch, c_out). 
+        Since we would like to add this to the output of the first (conv, norm, silu) block, 
+        which will have a different shape, we need to first add extra dimensions to 
+        the output of the (silu, linear) block.
+        '''
+        b, c, h, w = x.shape
+        one_by_one = self.one_by_one(x)
+        conv1 = self.conv_block1(x)
+        step_linear = self.linear_steps(time_emb)
+        step_reshaped = repeat(
+            step_linear,
+            'b c -> b c h w',
+            h=h,
+            w=w,
+        )
+        image_step_sum = conv1 + step_reshaped
+        conv2 = self.conv_block2(image_step_sum)
+        return one_by_one + conv2
+
+
+if MAIN:
+    w5d3_tests.test_residual_block(ResidualBlock)
+
+#%%
+class DownBlock(nn.Module):
+    def __init__(self, channels_in: int, channels_out: int, time_emb_dim: int, groups: int, downsample: bool):
+        pass
+
+    def forward(self, x: t.Tensor, step_emb: t.Tensor) -> tuple[t.Tensor, t.Tensor]:
+        '''
+        x: shape (batch, channels, height, width)
+        step_emb: shape (batch, emb)
+        Return: (downsampled output, full size output to skip to matching UpBlock)
+        '''
+        pass
+
+if MAIN:
+    w5d3_tests.test_downblock(DownBlock, downsample=True)
+    w5d3_tests.test_downblock(DownBlock, downsample=False)
+
+
+class UpBlock(nn.Module):
+    def __init__(self, dim_in: int, dim_out: int, time_emb_dim: int, groups: int, upsample: bool):
+        '''
+        IMPORTANT: arguments are with respect to the matching DownBlock.
+
+        '''
+        pass
+
+    def forward(self, x: t.Tensor, step_emb: t.Tensor, skip: t.Tensor) -> t.Tensor:
+        pass
+
+if MAIN:
+    w5d3_tests.test_upblock(UpBlock, upsample=True)
+    w5d3_tests.test_upblock(UpBlock, upsample=False)
+
+
+class MidBlock(nn.Module):
+    def __init__(self, mid_dim: int, time_emb_dim: int, groups: int):
+        pass
+
+    def forward(self, x: t.Tensor, step_emb: t.Tensor):
+        pass
+
+if MAIN:
+    w5d3_tests.test_midblock(MidBlock)
+
+
+@dataclass(frozen=True)
+class UnetConfig():
+    '''
+    image_shape: the input and output image shape, a tuple of (C, H, W)
+    channels: the number of channels after the first convolution.
+    dim_mults: the number of output channels for downblock i is dim_mults[i] * channels. Note that the default arg of (1, 2, 4, 8) will contain one more DownBlock and UpBlock than the DDPM image above.
+    groups: number of groups in the group normalization of each ResnetBlock (doesn't apply to attention block)
+    max_steps: the max number of (de)noising steps. We also use this value as the sinusoidal positional embedding dimension (although in general these do not need to be related).
+    '''
+    image_shape: Tuple[int, ...] = (1, 28, 28)
+    channels: int = 128
+    dim_mults: Tuple[int, ...] = (1, 2, 4, 8)
+    groups: int = 4
+    max_steps: int = 600
+
+class Unet(DiffusionModel):
+    def __init__(self, config: UnetConfig):
+        self.noise_schedule = None
+        self.image_shape = config.image_shape
+        pass
+
+    def forward(self, x: t.Tensor, num_steps: t.Tensor) -> t.Tensor:
+        '''
+        x: shape (batch, channels, height, width)
+        num_steps: shape (batch, )
+
+        out: shape (batch, channels, height, width)
+        '''
+        pass
+
+if MAIN:
+    w5d3_tests.test_unet(Unet)
