@@ -541,8 +541,15 @@ if MAIN:
         samples = sample(model, 1, return_all_steps=True)[::10, 0, :]
         samples_denormalized = denormalize_img(samples).cpu()
     plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
+
+#%%
+#######################################################################################
+
 #%% [markdown] 
+
 #### The DDPM Architecture
+#%%
+#######################################################################################
 
 #%%
 class GroupNorm(nn.Module):
@@ -704,30 +711,30 @@ def multihead_masked_attention(
     )
 
 # %%
-class MultiheadMaskedAttention(nn.Module):
-    W_QKV: nn.Linear
-    W_O: nn.Linear
+# class MultiheadMaskedAttentionOld(nn.Module):
+#     W_QKV: nn.Linear
+#     W_O: nn.Linear
 
-    def __init__(self, hidden_size: int, num_heads: int):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        assert self.hidden_size % self.num_heads == 0
-        self.W_QKV = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
-        self.W_O = nn.Linear(hidden_size, hidden_size, bias=True)
+#     def __init__(self, hidden_size: int, num_heads: int):
+#         super().__init__()
+#         self.hidden_size = hidden_size
+#         self.num_heads = num_heads
+#         assert self.hidden_size % self.num_heads == 0
+#         self.W_QKV = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
+#         self.W_O = nn.Linear(hidden_size, hidden_size, bias=True)
 
-    def forward(self, x: t.Tensor) -> t.Tensor:
-        '''
-        x: shape (batch, seq, hidden_size)
-        Return: shape (batch, seq, hidden_size)
-        '''
-        QKV = self.W_QKV(x)
-        Q = QKV[..., :self.hidden_size]
-        K = QKV[..., self.hidden_size:-self.hidden_size]
-        V = QKV[..., -self.hidden_size:]
-        attention_values = multihead_masked_attention(Q, K, V, self.num_heads)
-        attention_times_o = self.W_O(attention_values)
-        return attention_times_o
+#     def forward(self, x: t.Tensor) -> t.Tensor:
+#         '''
+#         x: shape (batch, seq, hidden_size)
+#         Return: shape (batch, seq, hidden_size)
+#         '''
+#         QKV = self.W_QKV(x)
+#         Q = QKV[..., :self.hidden_size]
+#         K = QKV[..., self.hidden_size:-self.hidden_size]
+#         V = QKV[..., -self.hidden_size:]
+#         attention_values = multihead_masked_attention(Q, K, V, self.num_heads)
+#         attention_times_o = self.W_O(attention_values)
+#         return attention_times_o
 # %%
 class SelfAttention(nn.Module):
     W_QKV: Linear
@@ -745,21 +752,32 @@ class SelfAttention(nn.Module):
         assert channels % num_heads == 0
         self.W_QKV = nn.Linear(channels, 3 * channels, bias=True)
         self.W_O = nn.Linear(channels, channels, bias=True)
+        self.channels = channels
+        self.num_heads = num_heads
 
     def forward(self, x: t.Tensor) -> t.Tensor:
         '''
+        Previously the input/output shape was batch, seq, hidden_size
         x: shape (batch, channels, height, width)
         out: shape (batch, channels, height, width)
         '''
         b, c, h, w = x.shape
         assert c == self.channels
-        QKV = self.W_QKV(x)
-        Q = QKV[..., :self.hidden_size]
-        K = QKV[..., self.hidden_size:-self.hidden_size]
-        V = QKV[..., -self.hidden_size:]
+        x_reshaped = rearrange(x, 'b c h w -> b (h w) c')
+        QKV = self.W_QKV(x_reshaped)
+        Q = QKV[..., :self.channels]
+        K = QKV[..., self.channels:-self.channels]
+        V = QKV[..., -self.channels:]
         attention_values = multihead_masked_attention(Q, K, V, self.num_heads)
         attention_times_o = self.W_O(attention_values)
-        return attention_times_o
+        attention_reshaped = rearrange(
+            attention_times_o, 
+            'b (h w) c -> b c h w', 
+            h=h, 
+            w=w
+        )
+        return attention_reshaped
 
 if MAIN:
     w5d3_tests.test_self_attention(SelfAttention)
+#%%
