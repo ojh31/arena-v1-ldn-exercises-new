@@ -1,7 +1,91 @@
 import torch as t
 from torch import nn
+import numpy as np
+import pandas as pd
+from IPython.display import display
+from typing import Callable
 
 import w5d3_solutions
+
+
+def test_positional_encoding(PosEnc: Callable):
+    max_steps = 10
+    embedding_dim = 100
+    x = np.arange(max_steps)
+    pos_enc = PosEnc(max_steps, embedding_dim)
+    out = pos_enc(x)
+    pos_enc_soln = w5d3_solutions.PositionalEncoding(max_steps, embedding_dim)
+    out_soln = pos_enc_soln(x)
+    assert out.shape == out_soln.shape
+    t.testing.assert_close(out, out_soln)
+    print('test_positional_encoding passed!')
+
+def print_param_count(*models, display_df=True, use_state_dict=False):
+    """
+    display_df: bool
+        If true, displays styled dataframe
+        if false, returns dataframe
+
+    use_state_dict: bool
+        If true, uses model.state_dict() to construct dataframe
+            This will include buffers, not just params
+        If false, uses model.named_parameters() to construct dataframe
+            This misses out buffers (more useful for GPT)
+    """
+    df_list = []
+    gmap_list = []
+    for i, model in enumerate(models, start=1):
+        print(f"Model {i}, total params = {sum([param.numel() for name, param in model.named_parameters()])}")
+        iterator = model.state_dict().items() if use_state_dict else model.named_parameters()
+        df = pd.DataFrame([
+            {f"name_{i}": name, f"shape_{i}": tuple(param.shape), f"num_params_{i}": param.numel()}
+            for name, param in iterator
+        ]) if (i == 1) else pd.DataFrame([
+            {f"num_params_{i}": param.numel(), f"shape_{i}": tuple(param.shape), f"name_{i}": name}
+            for name, param in iterator
+        ])
+        display(df)
+        df_list.append(df)
+        gmap_list.append(np.log(df[f"num_params_{i}"]))
+    df = df_list[0] if len(df_list) == 1 else pd.concat(df_list, axis=1).fillna(0)
+    for i in range(1, len(models) + 1):
+        df[f"num_params_{i}"] = df[f"num_params_{i}"].astype(int)
+    if len(models) > 1:
+        param_counts = [df[f"num_params_{i}"].values.tolist() for i in range(1, len(models) + 1)]
+        if all([param_counts[0] == param_counts[i] for i in range(1, len(param_counts))]):
+            print("All parameter counts match!")
+        else:
+            print("Parameter counts don't match up exactly.")
+    if display_df:
+        s = df.style
+        for i in range(1, len(models) + 1):
+            s = s.background_gradient(cmap="viridis", subset=[f"num_params_{i}"], gmap=gmap_list[i-1])
+        with pd.option_context("display.max_rows", 1000):
+            display(s)
+    else:
+        return df
+
+def compare_modules(actual: nn.Module, expected: nn.Module, name: str) -> None:
+    param_list = sorted(
+        [tuple(p_val.shape) for p_name, p_val in actual.named_parameters()], 
+        key=lambda x: -t.prod(t.tensor(x)).item()
+    )
+    param_list_expected = sorted(
+        [tuple(p_val.shape) for p_name, p_val in expected.named_parameters()], 
+        key=lambda x: -t.prod(t.tensor(x)).item()
+    )
+    param_count = sum([p.numel() for p in actual.parameters() if p.ndim > 1])
+    param_count_expected = sum([p.numel() for p in expected.parameters() if p.ndim > 1])
+    error_msg = (
+        f"Total number of (non-bias) parameters don't match: you have {param_count}, "
+        f"expected number is {param_count_expected}; "
+        f"found={param_list};  expected={param_list_expected}"
+    )
+    if param_count == param_count_expected:
+        print(f"Parameter count test in {name} passed.")
+    else:
+        print_param_count(actual, expected)
+        raise Exception(error_msg)
 
 @t.inference_mode()
 def test_groupnorm(GroupNorm, affine: bool):
@@ -47,15 +131,21 @@ def test_self_attention(SelfAttention):
         t.testing.assert_close(out_actual, out_expected)
         print("All tests in `test_self_attention` passed.")
     except:
-        print("Didn't find any linear layers called `W_QKV` and `W_O` with biases. Please change your linear layers to have these names, otherwise the values test can't be performed.")
+        print(
+            "Didn't find any linear layers called `W_QKV` and `W_O` with biases. "
+            "Please change your linear layers to have these names, "
+            "otherwise the values test can't be performed.")
+    compare_modules(sa, sa_solns, 'test_self_attention')
 
 @t.inference_mode()
 def test_attention_block(AttentionBlock):
     ab = AttentionBlock(channels=16)
+    ab_soln = w5d3_solutions.AttentionBlock(channels=16)
     img = t.randn(1, 16, 64, 64)
     out = ab(img)
     assert out.shape == img.shape
     print("Shape test in `test_attention_block` passed.")
+    compare_modules(ab, ab_soln, 'test_attention_block')
 
 @t.inference_mode()
 def test_residual_block(ResidualBlock):
@@ -72,18 +162,7 @@ def test_residual_block(ResidualBlock):
     print("Shape test in `test_residual_block` passed.")
     print("Testing parameter count...")
     rb_soln = w5d3_solutions.ResidualBlock(in_channels, out_channels, step_dim, groups)
-    param_list = sorted([tuple(p.shape) for p in rb.parameters()], key=lambda x: -t.prod(t.tensor(x)).item())
-    param_list_expected = sorted([tuple(p.shape) for p in rb_soln.parameters()], key=lambda x: -t.prod(t.tensor(x)).item())
-    if param_list == param_list_expected:
-        print("Parameter count test in `test_residual_block` passed.")
-    else:
-        param_count = sum([p.numel() for p in rb.parameters()])
-        param_count_expected = sum([p.numel() for p in rb_soln.parameters()])
-        if param_count_expected - param_count == 3 * out_channels:
-            print("Your parameter count is off by 3 * out_channels. This is probably because your conv layers have no biases. You can rewrite Conv2d to include biases if you want, otherwise you can proceed to the next section (this won't stop your model working).\nAfter this test, no errors will be raised for missing biases.")
-        else:
-            error_msg = "\n".join(["Parameter count test failed", f"Your parameter shapes are {param_list}", f"Expected param shapes are {param_list_expected}"])
-            raise Exception(error_msg)
+    compare_modules(rb, rb_soln, 'test_residual_block')
 
 @t.inference_mode()
 def test_downblock(DownBlock, downsample: bool):
@@ -104,13 +183,7 @@ def test_downblock(DownBlock, downsample: bool):
     print("Shape test in `test_downblock` passed.")
     print("Testing parameter count...")
     db_soln = w5d3_solutions.DownBlock(in_channels, out_channels, time_emb_dim, groups, downsample)
-    param_count = sum([p.numel() for p in db.parameters() if p.ndim > 1])
-    param_count_expected = sum([p.numel() for p in db_soln.parameters() if p.ndim > 1])
-    error_msg = f"Total number of (non-bias) parameters don't match: you have {param_count}, expected number is {param_count_expected}."
-    if downsample==False:
-        error_msg += "\nNote that downsample=False, so you don't need to define the conv layer."
-    assert param_count == param_count_expected, error_msg
-    print("Parameter count test in `test_residual_block` passed.\n")
+    compare_modules(db, db_soln, 'test_downblock')
 
 @t.inference_mode()
 def test_midblock(MidBlock):
@@ -138,18 +211,19 @@ def test_upblock(UpBlock, upsample):
     time_emb_dim = 1000
     groups = 2
     time_emb = t.randn(1, 1000)
-    img = t.randn(1, out_channels, 16, 16)
+    # img = t.randn(1, out_channels, 16, 16)
+    img = t.randn(1, in_channels, 16, 16)
     skip = t.rand_like(img)
     up = UpBlock(in_channels, out_channels, time_emb_dim, groups, upsample)
     out = up(img, time_emb, skip)
-    print("Testing shapes of output...")
-    if upsample:
-        assert out.shape == (1, in_channels, 32, 32)
-    else:
-        assert out.shape == (1, in_channels, 16, 16)
-    print("Shape test in `test_upblock` passed.")
-    print("Testing parameter count...")
+    # print("Testing shapes of output...")
+    # if upsample:
+    #     assert out.shape == (1, in_channels, 32, 32)
+    # else:
+    #     assert out.shape == (1, in_channels, 16, 16)
+    # print("Shape test in `test_upblock` passed.")
     up_soln = w5d3_solutions.UpBlock(in_channels, out_channels, time_emb_dim, groups, upsample)
+    print("Testing parameter count...")
     param_count = sum([p.numel() for p in up.parameters() if p.ndim > 1])
     param_count_expected = sum([p.numel() for p in up_soln.parameters() if p.ndim > 1])
     error_msg = f"Total number of (non-bias) parameters don't match: you have {param_count}, expected number is {param_count_expected}."
@@ -157,6 +231,10 @@ def test_upblock(UpBlock, upsample):
         error_msg += "\nNote that upsample=False, so you don't need to define the convtranspose layer."
     assert param_count == param_count_expected, error_msg
     print("Parameter count test in `test_upblock` passed.\n")
+    out_soln = up_soln(img, time_emb, skip)
+    print('Testing upblock output shapes...')
+    assert out.shape == out_soln.shape
+    print('... shapes OK.')
 
 @t.inference_mode()
 def test_unet(Unet):

@@ -29,10 +29,7 @@ import sys, os
 # CHANGE THIS TO YOUR PATH, TO IMPORT FROM WEEK 0
 sys.path.append(r"/home/oskar/projects/arena-v1-ldn-exercises-new/")
 
-from w0d2_chapter0_convolutions.solutions import Linear, conv2d, force_pair, IntOrPair
-from w0d3_chapter0_resnets.solutions import Sequential
-from w1d1_chapter1_transformer_reading.solutions import GELU, PositionalEncoding
-from w5d1_solutions import ConvTranspose2d
+from w0d2_chapter0_convolutions.solutions import Linear, force_pair, IntOrPair
 import w5d3_tests
 importlib.reload(w5d3_tests)
 # %%
@@ -610,37 +607,6 @@ if MAIN:
 
 
 # %%
-class PositionalEncodingOld(nn.Module):
-
-    def __init__(self, max_seq_len: int, embedding_dim: int):
-        super().__init__()
-        self.max_seq_len = max_seq_len # same as base above
-        self.embedding_dim = embedding_dim # same as D above
-
-    def forward(self, x: t.Tensor) -> t.Tensor:
-        """
-        x: shape (batch, seq_len, embedding_dim)
-        output: shape (batch, seq_len, embedding_dim)
-        """
-        batch, seq_len, embedding_dim = x.shape
-        embedding_idx = repeat(
-            t.arange(embedding_dim), 
-            'e -> b s e', 
-            s=seq_len, 
-            b=batch
-        )
-        pos_idx = repeat(
-            t.arange(seq_len), 
-            's -> b s e', 
-            e=embedding_idx, 
-            b=batch,
-        )
-        return t.where(
-            embedding_idx % 2 == 0,
-            t.sin(pos_idx / t.pow(seq_len, embedding_idx / embedding_dim)),
-            t.cos(pos_idx / t.pow(seq_len, (embedding_idx - 1) / embedding_dim))
-        )
-# %%
 class PositionalEncoding(nn.Module):
 
     def __init__(self, max_steps: int, embedding_dim: int):
@@ -660,11 +626,24 @@ class PositionalEncoding(nn.Module):
             'e -> b e', 
             b=batch
         )
+        x_broadcast = repeat(
+            x,
+            'b -> b e',
+            e=self.embedding_dim
+        )
+        print(x_broadcast.shape, embedding_idx.shape)
         return t.where(
             embedding_idx % 2 == 0,
-            t.sin(x / t.pow(10_000, embedding_idx / self.embedding_dim)),
-            t.cos(x / t.pow(10_000, (embedding_idx - 1) / self.embedding_dim))
+            t.sin(
+                x_broadcast / t.pow(10_000, embedding_idx / self.embedding_dim)
+            ),
+            t.cos(
+                x_broadcast / 
+                t.pow(10_000, (embedding_idx - 1) / self.embedding_dim)
+            )
         )
+
+w5d3_tests.test_positional_encoding(PositionalEncoding)
 # %%
 def swish(x: t.Tensor) -> t.Tensor:
     return x / (1 + t.exp(-x))
@@ -910,40 +889,120 @@ if MAIN:
 
 #%%
 class UpBlock(nn.Module):
-    def __init__(self, dim_in: int, dim_out: int, time_emb_dim: int, groups: int, upsample: bool):
+    def __init__(
+        self, dim_in: int, dim_out: int, time_emb_dim: int, groups: int, 
+        upsample: bool
+    ):
         '''
         IMPORTANT: arguments are with respect to the matching DownBlock.
-
         '''
-        pass
+        print(dim_in, dim_out, time_emb_dim, groups)
+        super().__init__()
+        self.dim_in = dim_in
+        self.dim_out = dim_out
+        self.time_emb_dim = time_emb_dim
+        self.groups = groups
+        self.res1 = ResidualBlock(
+            input_channels=dim_in * 2,
+            output_channels=dim_out,
+            step_dim=time_emb_dim,
+            groups=groups,
+        )
+        self.res2 = ResidualBlock(
+            input_channels=dim_out,
+            output_channels=dim_out,
+            step_dim=time_emb_dim,
+            groups=groups,
+        )
+        self.attn = AttentionBlock(
+            channels=dim_out,
+        )
+        if upsample:
+            self.conv = nn.ConvTranspose2d(
+                in_channels=dim_out,
+                out_channels=dim_out,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+            )
+        else:
+            self.conv = nn.Identity()
 
-    def forward(self, x: t.Tensor, step_emb: t.Tensor, skip: t.Tensor) -> t.Tensor:
-        pass
+    def forward(
+        self, x: t.Tensor, step_emb: t.Tensor, skip: t.Tensor
+    ) -> t.Tensor:
+        '''
+        x: shape b, c_in, h, w
+        step_emb: shape e
+        skip: shape b, c_in, h, w
+        '''
+        b, c_in, h, w = x.shape
+        print(x.shape)
+        assert c_in == self.dim_in, (
+            f'Input channels {c_in} does not match expected {self.dim_in}'
+        )
+        img_cct = t.concat((x, skip), dim=1)
+        print(img_cct.shape)
+        res1 = self.res1(img_cct, step_emb)
+        res2 = self.res2(res1, step_emb)
+        attn = self.attn(res2)
+        conv = self.conv(attn)
+        return conv
 
 if MAIN:
     w5d3_tests.test_upblock(UpBlock, upsample=True)
     w5d3_tests.test_upblock(UpBlock, upsample=False)
 
-
+#%%
 class MidBlock(nn.Module):
+    res1: ResidualBlock
+    attn: AttentionBlock
+    res2: ResidualBlock
+
     def __init__(self, mid_dim: int, time_emb_dim: int, groups: int):
-        pass
+        super().__init__()
+        self.res1 = ResidualBlock(
+            input_channels=mid_dim,
+            output_channels=mid_dim,
+            step_dim=time_emb_dim,
+            groups=groups,
+        )
+        self.attn = AttentionBlock(channels=mid_dim)
+        self.res2 = ResidualBlock(
+            input_channels=mid_dim,
+            output_channels=mid_dim,
+            step_dim=time_emb_dim,
+            groups=groups,
+        )
 
     def forward(self, x: t.Tensor, step_emb: t.Tensor):
-        pass
+        res1 = self.res1(x, step_emb)
+        attn = self.attn(res1)
+        res2 = self.res2(attn, step_emb)
+        return res2
+
 
 if MAIN:
     w5d3_tests.test_midblock(MidBlock)
 
-
+#%%
 @dataclass(frozen=True)
 class UnetConfig():
     '''
     image_shape: the input and output image shape, a tuple of (C, H, W)
     channels: the number of channels after the first convolution.
-    dim_mults: the number of output channels for downblock i is dim_mults[i] * channels. Note that the default arg of (1, 2, 4, 8) will contain one more DownBlock and UpBlock than the DDPM image above.
-    groups: number of groups in the group normalization of each ResnetBlock (doesn't apply to attention block)
-    max_steps: the max number of (de)noising steps. We also use this value as the sinusoidal positional embedding dimension (although in general these do not need to be related).
+    dim_mults: 
+        the number of output channels for downblock i is 
+        dim_mults[i] * channels. 
+        Note that the default arg of (1, 2, 4, 8) will contain one more 
+        DownBlock and UpBlock than the DDPM image above.
+    groups: 
+        number of groups in the group normalization of each 
+        ResnetBlock (doesn't apply to attention block)
+    max_steps: 
+        the max number of (de)noising steps. 
+        We also use this value as the sinusoidal positional embedding 
+        dimension (although in general these do not need to be related).
     '''
     image_shape: Tuple[int, ...] = (1, 28, 28)
     channels: int = 128
@@ -953,9 +1012,64 @@ class UnetConfig():
 
 class Unet(DiffusionModel):
     def __init__(self, config: UnetConfig):
+        super().__init__()
         self.noise_schedule = None
         self.image_shape = config.image_shape
-        pass
+        C, H, W = config.image_shape
+        self.embedding_dim = 4 * C
+        self.embedding_block = nn.Sequential(
+            PositionalEncoding(
+                max_steps=config.max_steps,
+                embedding_dim=self.embedding_dim,
+            ),
+            nn.Linear(config.max_steps, self.embedding_dim),
+            nn.GELU(),
+            nn.Linear(self.embedding_dim, self.embedding_dim),
+        )
+        self.initial_conv = nn.Conv2d(
+            in_channels=3,
+            out_channels=config.channels,
+            kernel_size=7,
+            padding=3,
+        )
+        self.n_downblocks = len(config.dim_mults)
+        self.n_upblocks = self.n_downblocks - 1
+        for i, mult in enumerate(config.dim_mults):
+            prev_mult = config.dim_mults[i - 1] if i >= 1 else 1
+            downblock = DownBlock(
+                channels_in=prev_mult* config.channels,
+                channels_out=mult * config.channels,
+                time_emb_dim=self.embedding_dim,
+                groups=config.groups,
+                downsample=i + 1 < len(config.dim_mults)
+            ) 
+            self.add_module(f'down{i}', downblock)
+        for i, mult in enumerate(config.dim_mults[:-1:-1]):
+            next_mult = config.dim_mults[i + 1]
+            upblock = UpBlock(
+                dim_in=mult * config.channels,
+                dim_out=next_mult * config.channels,
+                time_emb_dim=self.embedding_dim,
+                groups=config.groups,
+                upsample=True,
+            )
+            self.add_module(f'up{i}', upblock)
+        self.mid = MidBlock(
+            mid_dim=config.dim_mults[-1] * config.channels,
+            time_emb_dim=self.embedding_dim,
+            groups=config.groups,
+        )
+        self.res = ResidualBlock(
+            input_channels=config.channels,
+            output_channels=config.channels,
+            step_dim=self.embedding_dim,
+            groups=config.groups,
+        )
+        self.last_conv = nn.Conv2d(
+            in_channels=config.channels,
+            out_channels=3,
+            kernel_size=1,
+        )
 
     def forward(self, x: t.Tensor, num_steps: t.Tensor) -> t.Tensor:
         '''
@@ -964,7 +1078,21 @@ class Unet(DiffusionModel):
 
         out: shape (batch, channels, height, width)
         '''
-        pass
+        emb = self.embedding_block(num_steps)
+        x = self.initial_conv(x)
+        skip_stack = list()
+        for i in range(self.n_downblocks):
+            x, skip = getattr(self, f'down{i}')(x, emb)
+            skip_stack.append(skip)
+        x = self.mid(x)
+        for i in range(self.n_upblocks):
+            skip = skip_stack.pop()
+            x = getattr(self, f'up{i}')(x, skip, emb)
+        x = self.res(x, emb)
+        x = self.last_conv(x)
+        return x
+
 
 if MAIN:
     w5d3_tests.test_unet(Unet)
+# %%
