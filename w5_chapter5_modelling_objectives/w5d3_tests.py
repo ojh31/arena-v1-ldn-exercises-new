@@ -17,7 +17,7 @@ def test_positional_encoding(PosEnc: Callable):
     pos_enc_soln = w5d3_solutions.PositionalEncoding(max_steps, embedding_dim)
     out_soln = pos_enc_soln(x)
     assert out.shape == out_soln.shape
-    t.testing.assert_close(out, out_soln)
+    t.testing.assert_allclose(out, out_soln)
     print('test_positional_encoding passed!')
 
 def print_param_count(*models, display_df=True, use_state_dict=False):
@@ -243,13 +243,17 @@ def test_unet(Unet):
     image_size = 28
     channels = 8
     batch_size = 8
+    max_steps = 1_000
     config = w5d3_solutions.UnetConfig(
         image_shape=(8, 28, 28),
         channels=channels,
         dim_mults=(1, 2, 4),
+        max_steps=max_steps,
     )
     model = Unet(config)
     x = t.randn((batch_size, channels, image_size, image_size))
-    num_steps = t.randint(0, 1000, (batch_size,))
+    num_steps = t.randint(0, max_steps, (batch_size,))
     out = model(x, num_steps)
-    assert out.shape == x.shape
+    assert out.shape == x.shape, (
+        f'Unet out.shape={out.shape}, expected={x.shape}'
+    )

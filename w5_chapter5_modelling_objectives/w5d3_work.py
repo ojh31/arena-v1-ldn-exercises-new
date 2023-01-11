@@ -620,7 +620,9 @@ class PositionalEncoding(nn.Module):
         Out: shape (batch, embedding_dim)
         '''
         batch, = x.shape
-        assert (x <= self.max_steps).all()
+        assert (x <= self.max_steps).all(), (
+            f'max_steps={self.max_steps} < x.max()={x.max()}'
+        )
         embedding_idx = repeat(
             t.arange(self.embedding_dim), 
             'e -> b e', 
@@ -631,8 +633,7 @@ class PositionalEncoding(nn.Module):
             'b -> b e',
             e=self.embedding_dim
         )
-        print(x_broadcast.shape, embedding_idx.shape)
-        return t.where(
+        emb = t.where(
             embedding_idx % 2 == 0,
             t.sin(
                 x_broadcast / t.pow(10_000, embedding_idx / self.embedding_dim)
@@ -642,6 +643,7 @@ class PositionalEncoding(nn.Module):
                 t.pow(10_000, (embedding_idx - 1) / self.embedding_dim)
             )
         )
+        return emb
 
 w5d3_tests.test_positional_encoding(PositionalEncoding)
 # %%
@@ -896,7 +898,6 @@ class UpBlock(nn.Module):
         '''
         IMPORTANT: arguments are with respect to the matching DownBlock.
         '''
-        print(dim_in, dim_out, time_emb_dim, groups)
         super().__init__()
         self.dim_in = dim_in
         self.dim_out = dim_out
@@ -937,12 +938,10 @@ class UpBlock(nn.Module):
         skip: shape b, c_in, h, w
         '''
         b, c_in, h, w = x.shape
-        print(x.shape)
         assert c_in == self.dim_in, (
             f'Input channels {c_in} does not match expected {self.dim_in}'
         )
         img_cct = t.concat((x, skip), dim=1)
-        print(img_cct.shape)
         res1 = self.res1(img_cct, step_emb)
         res2 = self.res2(res1, step_emb)
         attn = self.attn(res2)
@@ -1020,40 +1019,45 @@ class Unet(DiffusionModel):
         self.embedding_block = nn.Sequential(
             PositionalEncoding(
                 max_steps=config.max_steps,
-                embedding_dim=self.embedding_dim,
+                embedding_dim=config.max_steps,
             ),
             nn.Linear(config.max_steps, self.embedding_dim),
             nn.GELU(),
             nn.Linear(self.embedding_dim, self.embedding_dim),
         )
         self.initial_conv = nn.Conv2d(
-            in_channels=3,
+            in_channels=C,
             out_channels=config.channels,
             kernel_size=7,
             padding=3,
         )
         self.n_downblocks = len(config.dim_mults)
         self.n_upblocks = self.n_downblocks - 1
-        for i, mult in enumerate(config.dim_mults):
-            prev_mult = config.dim_mults[i - 1] if i >= 1 else 1
+        for down_idx, down_mult in enumerate(config.dim_mults):
+            prev_down_mult = (
+                config.dim_mults[down_idx - 1] 
+                if down_idx >= 1 
+                else 1
+            )
             downblock = DownBlock(
-                channels_in=prev_mult* config.channels,
-                channels_out=mult * config.channels,
+                channels_in=prev_down_mult* config.channels,
+                channels_out=down_mult * config.channels,
                 time_emb_dim=self.embedding_dim,
                 groups=config.groups,
-                downsample=i + 1 < len(config.dim_mults)
+                downsample=down_idx + 1 < len(config.dim_mults)
             ) 
-            self.add_module(f'down{i}', downblock)
-        for i, mult in enumerate(config.dim_mults[:-1:-1]):
-            next_mult = config.dim_mults[i + 1]
+            self.add_module(f'down{down_idx}', downblock)
+        up_mults = config.dim_mults[::-1]
+        for up_idx, up_mult in enumerate(up_mults[:-1]):
+            next_up_mult = up_mults[up_idx + 1]
             upblock = UpBlock(
-                dim_in=mult * config.channels,
-                dim_out=next_mult * config.channels,
+                dim_in=up_mult * config.channels,
+                dim_out=next_up_mult * config.channels,
                 time_emb_dim=self.embedding_dim,
                 groups=config.groups,
                 upsample=True,
             )
-            self.add_module(f'up{i}', upblock)
+            self.add_module(f'up{up_idx}', upblock)
         self.mid = MidBlock(
             mid_dim=config.dim_mults[-1] * config.channels,
             time_emb_dim=self.embedding_dim,
@@ -1067,7 +1071,7 @@ class Unet(DiffusionModel):
         )
         self.last_conv = nn.Conv2d(
             in_channels=config.channels,
-            out_channels=3,
+            out_channels=C,
             kernel_size=1,
         )
 
@@ -1082,17 +1086,19 @@ class Unet(DiffusionModel):
         x = self.initial_conv(x)
         skip_stack = list()
         for i in range(self.n_downblocks):
-            x, skip = getattr(self, f'down{i}')(x, emb)
+            x, skip = self._modules[f'down{i}'](x, emb)
             skip_stack.append(skip)
-        x = self.mid(x)
+        x = self.mid(x, emb)
         for i in range(self.n_upblocks):
             skip = skip_stack.pop()
-            x = getattr(self, f'up{i}')(x, skip, emb)
+            print(x.shape, skip.shape)
+            x = self._modules[f'up{i}'](x, emb, skip)
         x = self.res(x, emb)
         x = self.last_conv(x)
         return x
 
 
 if MAIN:
+    importlib.reload(w5d3_tests)
     w5d3_tests.test_unet(Unet)
 # %%
