@@ -19,6 +19,7 @@ from torchvision import datasets
 from pathlib import Path
 from fancy_einsum import einsum
 import numpy as np
+import importlib
 
 MAIN = __name__ == "__main__"
 
@@ -33,6 +34,7 @@ from w0d3_chapter0_resnets.solutions import Sequential
 from w1d1_chapter1_transformer_reading.solutions import GELU, PositionalEncoding
 from w5d1_solutions import ConvTranspose2d
 import w5d3_tests
+importlib.reload(w5d3_tests)
 # %%
 def gradient_images(n_images: int, img_size: tuple[int, int, int]) -> t.Tensor:
     '''Generate n_images of img_size, each a color gradient
@@ -711,31 +713,6 @@ def multihead_masked_attention(
     )
 
 # %%
-# class MultiheadMaskedAttentionOld(nn.Module):
-#     W_QKV: nn.Linear
-#     W_O: nn.Linear
-
-#     def __init__(self, hidden_size: int, num_heads: int):
-#         super().__init__()
-#         self.hidden_size = hidden_size
-#         self.num_heads = num_heads
-#         assert self.hidden_size % self.num_heads == 0
-#         self.W_QKV = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
-#         self.W_O = nn.Linear(hidden_size, hidden_size, bias=True)
-
-#     def forward(self, x: t.Tensor) -> t.Tensor:
-#         '''
-#         x: shape (batch, seq, hidden_size)
-#         Return: shape (batch, seq, hidden_size)
-#         '''
-#         QKV = self.W_QKV(x)
-#         Q = QKV[..., :self.hidden_size]
-#         K = QKV[..., self.hidden_size:-self.hidden_size]
-#         V = QKV[..., -self.hidden_size:]
-#         attention_values = multihead_masked_attention(Q, K, V, self.num_heads)
-#         attention_times_o = self.W_O(attention_values)
-#         return attention_times_o
-# %%
 class SelfAttention(nn.Module):
     W_QKV: Linear
     W_O: Linear
@@ -774,7 +751,7 @@ class SelfAttention(nn.Module):
             attention_times_o, 
             'b (h w) c -> b c h w', 
             h=h, 
-            w=w
+            w=w,
         )
         return attention_reshaped
 
@@ -786,12 +763,13 @@ class AttentionBlock(nn.Module):
         super().__init__()
         self.channels = channels
         self.attention = SelfAttention(channels=channels)
+        self.groupnorm = GroupNorm(1, channels)
 
     def forward(self, x: t.Tensor) -> t.Tensor:
-        return self.attention(x)
+        return x + self.attention(self.groupnorm(x))
 
 if MAIN:
-    w5d3_tests.test_attention_block(SelfAttention)
+    w5d3_tests.test_attention_block(AttentionBlock)
 
 #%%
 class ResidualBlock(nn.Module):
@@ -811,11 +789,14 @@ class ResidualBlock(nn.Module):
         self.output_channels = output_channels
         self.step_dim = step_dim
         self.groups = groups
-        self.one_by_one = nn.Conv2d(
-            in_channels=input_channels,
-            out_channels=output_channels,
-            kernel_size=1,
-        )
+        if input_channels == output_channels:
+            self.one_by_one = nn.Identity()
+        else:
+            self.one_by_one = nn.Conv2d(
+                in_channels=input_channels,
+                out_channels=output_channels,
+                kernel_size=1,
+            )
         self.conv_block1 = nn.Sequential(
             nn.Conv2d(
                 in_channels=input_channels,
@@ -870,22 +851,64 @@ if MAIN:
 
 #%%
 class DownBlock(nn.Module):
-    def __init__(self, channels_in: int, channels_out: int, time_emb_dim: int, groups: int, downsample: bool):
-        pass
+    def __init__(
+        self, channels_in: int, channels_out: int, time_emb_dim: int, groups: int, 
+        downsample: bool
+    ):
+        super().__init__()
+        self.res1 = ResidualBlock(
+            input_channels=channels_in,
+            output_channels=channels_out,
+            step_dim=time_emb_dim,
+            groups=groups,
+        )
+        self.res2 = ResidualBlock(
+            input_channels=channels_out,
+            output_channels=channels_out,
+            step_dim=time_emb_dim,
+            groups=groups,
+        )
+        self.attention = AttentionBlock(channels=channels_out)
+        if downsample:
+            self.conv = nn.Conv2d(
+                in_channels=channels_out,
+                out_channels=channels_out,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+            )
+        else:
+            self.conv = nn.Identity()
+        self.downsample = downsample
 
-    def forward(self, x: t.Tensor, step_emb: t.Tensor) -> tuple[t.Tensor, t.Tensor]:
+
+    def forward(
+        self, x: t.Tensor, step_emb: t.Tensor
+    ) -> tuple[t.Tensor, t.Tensor]:
         '''
         x: shape (batch, channels, height, width)
         step_emb: shape (batch, emb)
-        Return: (downsampled output, full size output to skip to matching UpBlock)
+        Return: 
+            (downsampled output, full size output to skip to matching UpBlock)
         '''
-        pass
+        batch, channels, height, width = x.shape
+        if self.downsample:
+            assert height % 2 == 0
+            assert width % 2 == 0
+        res1 = self.res1(x, step_emb)
+        res2 = self.res2(res1, step_emb)
+        attention = self.attention(res2)
+        conv = self.conv(attention)
+        return conv, attention
 
 if MAIN:
+    # FIXME: why do I have an extra 12x12 weight? c_out x c_out
+    # Maybe Conv2d implementations?
+    # Encapsulate method for comparing modules and check sub-modules of DownBlock
     w5d3_tests.test_downblock(DownBlock, downsample=True)
     w5d3_tests.test_downblock(DownBlock, downsample=False)
 
-
+#%%
 class UpBlock(nn.Module):
     def __init__(self, dim_in: int, dim_out: int, time_emb_dim: int, groups: int, upsample: bool):
         '''
