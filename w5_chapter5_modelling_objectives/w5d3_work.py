@@ -343,12 +343,12 @@ if MAIN:
     n_images = 5
     imgs = gradient_images(n_images, image_shape)
     n_steps = t.zeros(imgs.size(0))
-    model_config = TinyDiffuserConfig(image_shape, hidden_size=16)
-    model = TinyDiffuser(model_config)
-    out = model(imgs, n_steps)
+    tiny_config = TinyDiffuserConfig(image_shape, hidden_size=16)
+    tiny_model = TinyDiffuser(tiny_config)
+    out = tiny_model(imgs, n_steps)
     plot_img(out[0].detach(), "Noise prediction of untrained model")
 #%%
-def train_tiny_diffuser(
+def train_diffuser(
     model: DiffusionModel, 
     args: DiffusionArgs, 
     trainset: TensorDataset,
@@ -462,25 +462,25 @@ def log_images(
 
 #%%
 if MAIN:
-    args = DiffusionArgs(
+    tiny_args = DiffusionArgs(
         project='w5d3_tiny_diffuser',
         epochs=10,
         track=True,
         seconds_between_image_logs=1,
     ) # This shouldn't take long to train
-    model_config = TinyDiffuserConfig(
-        args.image_shape,
-        args.hidden_size,
-        args.max_steps,
+    tiny_config = TinyDiffuserConfig(
+        tiny_args.image_shape,
+        tiny_args.hidden_size,
+        tiny_args.max_steps,
     )
-    model = TinyDiffuser(model_config).to(device).train()
-    trainset = TensorDataset(normalize_img(gradient_images(
-        args.n_images, args.image_shape
+    tiny_model = TinyDiffuser(tiny_config).to(device).train()
+    tiny_trainset = TensorDataset(normalize_img(gradient_images(
+        tiny_args.n_images, tiny_args.image_shape
     )))
-    testset = TensorDataset(normalize_img(gradient_images(
-        args.n_eval_images, args.image_shape
+    tiny_testset = TensorDataset(normalize_img(gradient_images(
+        tiny_args.n_eval_images, tiny_args.image_shape
     )))
-    model = train_tiny_diffuser(model, args, trainset, testset)
+    tiny_model = train_diffuser(tiny_model, tiny_args, tiny_trainset, tiny_testset)
 #%%
 def sample(
     model: DiffusionModel, n_samples: int, return_all_steps: bool = False
@@ -500,7 +500,7 @@ def sample(
         batched result of (i+1) steps of sampling)
     '''
     schedule = model.noise_schedule
-    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
+    device = 'cuda' if tiny_args.cuda and t.cuda.is_available() else 'cpu'
     model = model.to(device=device)
     assert schedule is not None
     xs = t.zeros(
@@ -528,16 +528,16 @@ def sample(
 #%%
 if MAIN:
     print("Generating multiple images")
-    assert isinstance(model, DiffusionModel)
+    assert isinstance(tiny_model, DiffusionModel)
     with t.inference_mode():
-        samples = sample(model, 6)
+        samples = sample(tiny_model, 6)
         samples_denormalized = denormalize_img(samples).cpu()
     plot_img_grid(samples_denormalized, title="Sample denoised images", cols=3)
 if MAIN:
     print("Printing sequential denoising")
-    assert isinstance(model, DiffusionModel)
+    assert isinstance(tiny_model, DiffusionModel)
     with t.inference_mode():
-        samples = sample(model, 1, return_all_steps=True)[::10, 0, :]
+        samples = sample(tiny_model, 1, return_all_steps=True)[::10, 0, :]
         samples_denormalized = denormalize_img(samples).cpu()
     plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
 
@@ -624,7 +624,7 @@ class PositionalEncoding(nn.Module):
             f'max_steps={self.max_steps} < x.max()={x.max()}'
         )
         embedding_idx = repeat(
-            t.arange(self.embedding_dim), 
+            t.arange(self.embedding_dim, device=x.device), 
             'e -> b e', 
             b=batch
         )
@@ -1091,7 +1091,6 @@ class Unet(DiffusionModel):
         x = self.mid(x, emb)
         for i in range(self.n_upblocks):
             skip = skip_stack.pop()
-            print(x.shape, skip.shape)
             x = self._modules[f'up{i}'](x, emb, skip)
         x = self.res(x, emb)
         x = self.last_conv(x)
@@ -1101,4 +1100,176 @@ class Unet(DiffusionModel):
 if MAIN:
     importlib.reload(w5d3_tests)
     w5d3_tests.test_unet(Unet)
+#%%
+#################################################
+# %% [markdown]
+#### Part 4: Fashion MNIST
+#%%
+##################################################
+
+#%%
+def train_unet(
+    model: DiffusionModel, 
+    args: DiffusionArgs, 
+    trainset: TensorDataset,
+    testset: Optional[TensorDataset] = None
+) -> DiffusionModel:
+    t.manual_seed(args.seed)
+    device = 'cuda' if args.cuda and t.cuda.is_available() else 'cpu'
+    model = model.to(device=device)
+    batch_size = args.batch_size
+    max_steps = args.max_steps
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
+    testloader = DataLoader(testset, batch_size=batch_size, shuffle=True)
+    opt = t.optim.Adam(model.parameters())
+    model.noise_schedule = noise_schedule = NoiseSchedule(max_steps, device)
+    example_images, = next(iter(testloader))
+    example_images = example_images.to(device=device)
+
+    if args.track:
+        wandb.init(project=args.project, config=args.__dict__)
+
+    n_examples_seen = 0
+    last_image_log = time.time()
+    for epoch in range(args.epochs):
+        print(f'Epoch: {epoch + 1}')
+        epoch_loss = 0
+        model.train()
+        for x0, in tqdm(trainloader):
+            opt.zero_grad()
+            x0 = x0.to(device=device)
+            num_steps, noise, noised = noise_img(x0, noise_schedule)
+            b, c, h, w = x0.shape
+            alpha_bar = noise_schedule.alpha_bar_like(x0, num_steps)
+            x0_scaled = t.sqrt(alpha_bar) * x0 + t.sqrt(1 - alpha_bar) * noise
+            eps_model = model(x0_scaled, num_steps)
+            loss = ((noise - eps_model) ** 2).sum()
+            loss.backward()
+            opt.step()
+            n_examples_seen += batch_size
+            epoch_loss += loss
+
+            long_since_image_log = (
+                time.time() - last_image_log > args.seconds_between_image_logs
+            )
+            if args.track and long_since_image_log:
+                num_steps, noise, noised = noise_img(
+                    example_images, noise_schedule
+                )
+                example_bar = noise_schedule.alpha_bar_like(example_images, num_steps)
+                example_scaled = t.sqrt(example_bar) * example_images + t.sqrt(1 - example_bar) * noise
+                model.eval()
+                with t.inference_mode():
+                    noise_model = model(example_scaled, num_steps)
+                model.train()
+                reconstructed = reconstruct(noised, noise_model, num_steps, noise_schedule)
+                wandb_images = log_images(
+                    example_images, noised, noise, noise_model, reconstructed,
+                )
+                wandb.log(
+                    dict(
+                        images=wandb_images, 
+                    ), 
+                    step=n_examples_seen
+                )
+                last_image_log = time.time()
+
+        if args.track:
+            wandb.log(dict(
+                train_loss=epoch_loss / len(trainloader)
+            ), step=n_examples_seen)
+
+        model.eval()
+        test_loss = 0
+        for x0, in testloader:
+            x0 = x0.to(device=device)
+            num_steps, noise, noised = noise_img(x0, noise_schedule)
+            alpha_bar = repeat(
+                noise_schedule.alpha_bar(num_steps),
+                'b -> b c h w',
+                c=c,
+                h=h,
+                w=w,
+            )
+            x0_scaled = t.sqrt(alpha_bar) * x0 + t.sqrt(1 - alpha_bar) * noise
+            with t.inference_mode():
+                eps_model = model(x0_scaled, num_steps)
+            loss = ((noise - eps_model) ** 2).sum()
+            test_loss += loss
+        if args.track:
+            wandb.log(dict(
+                train_loss=epoch_loss / len(trainloader)
+            ), step=n_examples_seen)
+            
+    return model.eval().to(device='cpu')
+#%%
+def get_fashion_mnist(train_transform, test_transform) -> Tuple[TensorDataset, TensorDataset]:
+    '''Return MNIST data using the provided Tensor class.'''
+    mnist_train = datasets.FashionMNIST("../data", train=True, download=True)
+    mnist_test = datasets.FashionMNIST("../data", train=False)
+    print("Preprocessing data...")
+    train_tensors = TensorDataset(
+        t.stack([train_transform(img) for (img, label) in tqdm(mnist_train, desc="Training data")])
+    )
+    test_tensors = TensorDataset(t.stack([test_transform(img) for (img, label) in tqdm(mnist_test, desc="Test data")]))
+    return (train_tensors, test_tensors)
+#%%
+if MAIN:
+    train_subset = 0.01
+    train_transform = transforms.Compose([
+        transforms.ToTensor(), 
+        transforms.RandomHorizontalFlip(), 
+        transforms.Lambda(lambda t: t * 2 - 1)
+    ])
+    data_folder = Path("./data/fashion_mnist")
+    data_folder.mkdir(exist_ok=True, parents=True)
+    DATASET_FILENAME = data_folder / "generative_models_dataset_fashion.pt"
+    if DATASET_FILENAME.exists():
+        (unet_trainset, unet_testset) = t.load(str(DATASET_FILENAME))
+        # print(len(unet_trainset), len(unet_testset))
+        # unet_trainset = unet_trainset[int(len(unet_trainset) * train_subset):]
+        # print(len(unet_trainset), len(unet_testset))
+    else:
+        (unet_trainset, unet_testset) = get_fashion_mnist(train_transform, train_transform)
+        t.save((unet_trainset, unet_testset), str(DATASET_FILENAME))
+
 # %%
+if MAIN:
+    unet_config = UnetConfig(
+        channels = 28,
+        dim_mults = (1, 2, 4), # Using smaller channels and dim_mults than default
+    )
+    unet_args = DiffusionArgs(
+        image_shape = unet_config.image_shape, 
+        max_steps = unet_config.max_steps,
+        project='w5d3_unet',
+        cuda=True,
+        batch_size=8,
+        track=False,
+        epochs=1,
+    )
+    unet_model = Unet(unet_config)
+
+if MAIN:
+    unet_model = train_unet(
+        unet_model, 
+        unet_args, 
+        t.utils.data.Subset(unet_trainset, list(range(100))), 
+        t.utils.data.Subset(unet_testset, list(range(100))), 
+    )
+#%%
+# if MAIN:
+#     print("Generating multiple images")
+#     assert isinstance(unet_model, DiffusionModel)
+#     with t.inference_mode():
+#         samples = sample(unet_model, 6)
+#         samples_denormalized = denormalize_img(samples).cpu()
+#     plot_img_grid(samples_denormalized, title="Sample denoised images", cols=3)
+#     print("Printing sequential denoising")
+#     assert isinstance(unet_model, DiffusionModel)
+#     with t.inference_mode():
+#         samples = sample(unet_model, 1, return_all_steps=True)[::30, 0, :]
+#         samples_denormalized = denormalize_img(samples).cpu()
+#     plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
+#%%
+# FIXME: WHY CRASHING???!!
