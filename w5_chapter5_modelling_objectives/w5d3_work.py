@@ -348,7 +348,7 @@ if MAIN:
     out = tiny_model(imgs, n_steps)
     plot_img(out[0].detach(), "Noise prediction of untrained model")
 #%%
-def train_diffuser(
+def train_tiny_diffuser(
     model: DiffusionModel, 
     args: DiffusionArgs, 
     trainset: TensorDataset,
@@ -480,7 +480,7 @@ if MAIN:
     tiny_testset = TensorDataset(normalize_img(gradient_images(
         tiny_args.n_eval_images, tiny_args.image_shape
     )))
-    tiny_model = train_diffuser(tiny_model, tiny_args, tiny_trainset, tiny_testset)
+    tiny_model = train_tiny_diffuser(tiny_model, tiny_args, tiny_trainset, tiny_testset)
 #%%
 def sample(
     model: DiffusionModel, n_samples: int, return_all_steps: bool = False
@@ -1014,6 +1014,7 @@ class Unet(DiffusionModel):
         super().__init__()
         self.noise_schedule = None
         self.image_shape = config.image_shape
+        self.max_steps = config.max_steps
         C, H, W = config.image_shape
         self.embedding_dim = 4 * C
         self.embedding_block = nn.Sequential(
@@ -1244,8 +1245,8 @@ if MAIN:
         max_steps = unet_config.max_steps,
         project='w5d3_unet',
         cuda=True,
-        batch_size=8,
-        track=False,
+        batch_size=32,
+        track=True,
         epochs=1,
     )
     unet_model = Unet(unet_config)
@@ -1254,22 +1255,21 @@ if MAIN:
     unet_model = train_unet(
         unet_model, 
         unet_args, 
-        t.utils.data.Subset(unet_trainset, list(range(100))), 
-        t.utils.data.Subset(unet_testset, list(range(100))), 
+        unet_trainset, #t.utils.data.Subset(unet_trainset, list(range(10000))), 
+        unet_testset, #t.utils.data.Subset(unet_testset, list(range(10000))), 
     )
 #%%
-# if MAIN:
-#     print("Generating multiple images")
-#     assert isinstance(unet_model, DiffusionModel)
-#     with t.inference_mode():
-#         samples = sample(unet_model, 6)
-#         samples_denormalized = denormalize_img(samples).cpu()
-#     plot_img_grid(samples_denormalized, title="Sample denoised images", cols=3)
-#     print("Printing sequential denoising")
-#     assert isinstance(unet_model, DiffusionModel)
-#     with t.inference_mode():
-#         samples = sample(unet_model, 1, return_all_steps=True)[::30, 0, :]
-#         samples_denormalized = denormalize_img(samples).cpu()
-#     plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
+if MAIN:
+    print("Generating multiple images")
+    assert isinstance(unet_model, DiffusionModel)
+    with t.inference_mode():
+        samples = sample(unet_model, 6)
+        samples_denormalized = denormalize_img(samples).cpu()
+    plot_img_grid(samples_denormalized, title="Sample denoised images", cols=3)
+    print("Printing sequential denoising")
+    assert isinstance(unet_model, DiffusionModel)
+    with t.inference_mode():
+        samples = sample(unet_model, 1, return_all_steps=True)[::30, 0, :]
+        samples_denormalized = denormalize_img(samples).cpu()
+    plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
 #%%
-# FIXME: WHY CRASHING???!!

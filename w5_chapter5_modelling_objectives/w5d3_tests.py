@@ -11,7 +11,7 @@ import w5d3_solutions
 def test_positional_encoding(PosEnc: Callable):
     max_steps = 10
     embedding_dim = 100
-    x = np.arange(max_steps)
+    x = t.arange(max_steps)
     pos_enc = PosEnc(max_steps, embedding_dim)
     out = pos_enc(x)
     pos_enc_soln = w5d3_solutions.PositionalEncoding(max_steps, embedding_dim)
