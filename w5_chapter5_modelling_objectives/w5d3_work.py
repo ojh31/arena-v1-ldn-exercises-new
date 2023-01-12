@@ -374,6 +374,7 @@ def train_tiny_diffuser(
     for epoch in range(args.epochs):
         print(f'Epoch: {epoch + 1}')
         epoch_loss = 0
+        epoch_examples = 0
         model.train()
         for x0, in tqdm(trainloader):
             opt.zero_grad()
@@ -387,6 +388,7 @@ def train_tiny_diffuser(
             loss.backward()
             opt.step()
             n_examples_seen += batch_size
+            epoch_examples += batch_size
             epoch_loss += loss
 
             long_since_image_log = (
@@ -1134,6 +1136,7 @@ def train_unet(
     last_image_log = time.time()
     for epoch in range(args.epochs):
         print(f'Epoch: {epoch + 1}')
+        epoch_examples = 0
         epoch_loss = 0
         model.train()
         for x0, in tqdm(trainloader):
@@ -1148,6 +1151,7 @@ def train_unet(
             loss.backward()
             opt.step()
             n_examples_seen += batch_size
+            epoch_examples += batch_size
             epoch_loss += loss
 
             long_since_image_log = (
@@ -1170,15 +1174,12 @@ def train_unet(
                 wandb.log(
                     dict(
                         images=wandb_images, 
+                        train_loss=epoch_loss / epoch_examples
                     ), 
                     step=n_examples_seen
                 )
                 last_image_log = time.time()
 
-        if args.track:
-            wandb.log(dict(
-                train_loss=epoch_loss / len(trainloader)
-            ), step=n_examples_seen)
 
         model.eval()
         test_loss = 0
@@ -1197,10 +1198,6 @@ def train_unet(
                 eps_model = model(x0_scaled, num_steps)
             loss = ((noise - eps_model) ** 2).sum()
             test_loss += loss
-        if args.track:
-            wandb.log(dict(
-                train_loss=epoch_loss / len(trainloader)
-            ), step=n_examples_seen)
             
     return model.eval().to(device='cpu')
 #%%
@@ -1239,6 +1236,7 @@ if MAIN:
     unet_config = UnetConfig(
         channels = 28,
         dim_mults = (1, 2, 4), # Using smaller channels and dim_mults than default
+        max_steps=750,
     )
     unet_args = DiffusionArgs(
         image_shape = unet_config.image_shape, 
@@ -1273,3 +1271,4 @@ if MAIN:
         samples_denormalized = denormalize_img(samples).cpu()
     plot_img_slideshow(samples_denormalized, title="Sample denoised image slideshow")
 #%%
+# FIXME: I think there is something wrong with my sample() method
