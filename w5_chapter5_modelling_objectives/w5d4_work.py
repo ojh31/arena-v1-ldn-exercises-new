@@ -409,3 +409,50 @@ def cosine_similarities(a: t.Tensor, b: t.Tensor) -> t.Tensor:
 if MAIN:
     w5d4_tests.test_cosine_similarity(cosine_similarities)
 # %%
+def load_trained_model(config: CLIPConfig):
+    model = CLIPModel(config)
+    full_state_dict = get_reference_clip_model().state_dict()
+    model.load_state_dict(full_state_dict)
+    return model
+
+
+if MAIN:
+    config = CLIPConfig(CLIPVisionConfig(), CLIPTextConfig())
+    model = load_trained_model(config).to(device)
+    with t.inference_mode():
+        out = model(input_ids.to(device), attention_mask.to(device), pixel_values.to(device))
+    similarities = cosine_similarities(out.text_embeds, out.image_embeds)
+    df = pd.DataFrame(similarities.detach().cpu().numpy(), index=texts, columns=image_names).round(3)
+    display(df.style.background_gradient(cmap='Reds').format('{:.1%}'))
+# %%
+def contrastive_loss(
+    text_embeds: t.Tensor, image_embeds: t.Tensor, logit_scale: t.Tensor
+) -> t.Tensor:
+    '''
+    Return the contrastive loss between a batch of text and image embeddings.
+
+    The embeddings must be in order so that text_embeds[i] corresponds with 
+    image_embeds[i].
+
+    text_embeds: (batch, output_dim)
+    image_embeds: (batch, output_dim)
+    logit_scale: () - 
+        log of the scale factor to apply to each element of the similarity matrix
+
+    Out: scalar tensor containing the loss
+    '''
+    similar = cosine_similarities(text_embeds, image_embeds)
+    similar *= t.exp(logit_scale)
+    text_loss = nn.functional.cross_entropy(similar, t.arange(len(similar)))
+    image_loss = nn.functional.cross_entropy(similar.T, t.arange(len(similar)))
+    return 0.5 * (text_loss + image_loss)
+
+
+
+if MAIN:
+    w5d4_tests.test_contrastive_loss(contrastive_loss)
+##############################################################
+# %% [markdown]
+#### Part 2: Stable diffusion
+#%%
+################################################################
