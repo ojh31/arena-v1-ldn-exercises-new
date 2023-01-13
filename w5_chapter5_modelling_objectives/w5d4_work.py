@@ -91,7 +91,7 @@ class CLIPVisionEmbeddings(nn.Module):
         pos = self.position_embedding(self.position_ids)
         patch_flat = rearrange(patch, 'b e h w -> b (h w) e')
         class_reshaped = repeat(self.class_embedding, 'e -> b s e', b=b, s=1)
-        patch_and_class = t.cat((patch_flat, class_reshaped), dim=1)
+        patch_and_class = t.cat((class_reshaped, patch_flat), dim=1)
         return patch_and_class + pos
         
 
