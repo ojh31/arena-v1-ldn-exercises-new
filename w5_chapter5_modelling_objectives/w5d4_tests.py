@@ -58,7 +58,7 @@ def test_vision_transformer(CLIPVisionTransformer):
     with t.inference_mode():
         expected = theirs(x).pooler_output
         actual = mine(x)
-    t.testing.assert_close(actual, expected, 1e-4)
+    t.testing.assert_close(actual, expected, atol=1e-4, rtol=0)
 
 def test_clip_model(CLIPModel):
     theirs = get_reference_clip_model()

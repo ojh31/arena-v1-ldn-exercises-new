@@ -24,6 +24,7 @@ from w5d4_utils import (
     get_reference_model,
     get_reference_clip_model,
 )
+import importlib
 
 MAIN = __name__ == "__main__"
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
@@ -200,7 +201,8 @@ class CLIPAttention(nn.Module):
         '''
         Perform forward pass through attention layer, computing attention pattern and 
         value projections to combine into output. 
-        Remember to apply dropout.'''
+        Remember to apply dropout.
+        '''
         attention_scores = self.attention_pattern_pre_softmax(x)
         attention_probabilities = nn.functional.softmax(
             attention_scores, dim=-1
@@ -226,4 +228,66 @@ class CLIPAttention(nn.Module):
 
 if MAIN:
     w5d4_tests.test_vision_attention(CLIPAttention)
+# %%
+class CLIPEncoderLayer(nn.Module):
+    def __init__(self, config: Union[CLIPVisionConfig, CLIPTextConfig]):
+        super().__init__()
+        self.embed_dim = config.hidden_size
+        self.self_attn = CLIPAttention(config)
+        self.layer_norm1 = nn.LayerNorm(self.embed_dim)
+        self.mlp = CLIPMLP(config)
+        self.layer_norm2 = nn.LayerNorm(self.embed_dim)
+
+    def forward(self, x):
+        x = x + self.self_attn(self.layer_norm1(x))
+        x = x + self.mlp(self.layer_norm2(x))
+        return x
+# %%
+class CLIPEncoder(nn.Module):
+    layers: nn.ModuleList # [CLIPEncoderLayer]
+
+    def __init__(self, config: Union[CLIPVisionConfig, CLIPTextConfig]):
+        super().__init__()
+        self.layers = nn.ModuleList([CLIPEncoderLayer(config) for _ in range(config.num_hidden_layers)])
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        for layer in self.layers:
+            x = layer(x)
+        return x
+# %%
+class CLIPVisionTransformer(nn.Module):
+    config: CLIPVisionConfig
+    embeddings: CLIPVisionEmbeddings
+    pre_layrnorm: nn.LayerNorm
+    encoder: CLIPEncoder
+    post_layernorm: nn.LayerNorm
+
+    def __init__(self, config: CLIPVisionConfig):
+        '''
+        Assign values from input config to class member variables as appropriate
+        '''
+        super().__init__()
+        self.embeddings = CLIPVisionEmbeddings(config)
+        self.pre_layrnorm = nn.LayerNorm(config.hidden_size)
+        self.encoder = CLIPEncoder(config)
+        self.post_layernorm = nn.LayerNorm(config.hidden_size)
+
+    def forward(self, x: t.Tensor) -> t.Tensor:
+        '''
+        Perform forward pass through vision transformer: 
+            embedding, layer norm, encoder, layer norm
+
+        Return output corresponding to prepended class_embedding
+        '''
+        x = self.embeddings(x)
+        x = self.pre_layrnorm(x)
+        x = self.encoder(x)
+        x = x[:, 0, :] # output is taken from "begin token"
+        x = self.post_layernorm(x)
+        return x
+
+
+if MAIN:
+    importlib.reload(w5d4_tests)
+    w5d4_tests.test_vision_transformer(CLIPVisionTransformer)
 # %%
