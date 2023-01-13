@@ -361,3 +361,51 @@ class CLIPModel(nn.Module):
 if MAIN:
     w5d4_tests.test_clip_model(CLIPModel)
 # %%
+def get_images(glob_fnames: str) -> tuple[list[str], list[Image.Image]]:
+    filenames = glob.glob(glob_fnames)
+    images = [Image.open(filename).convert("RGB") for filename in filenames]
+    image_names = [os.path.splitext(os.path.basename(filename))[0] for filename in filenames]
+    for im in images:
+        display(im)
+    return (image_names, images)
+
+
+if MAIN:
+    preprocess = cast(
+        Callable[[Image.Image], t.Tensor],
+        transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Resize((224, 224)),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        ),
+    )
+    texts = [
+        "A guinea pig eating a cucumber",
+        "A pencil sketch of a guinea pig",
+        "A rabbit eating a carrot",
+        "A paperclip maximizer",
+        "A roman cathedral on Mars",
+    ]
+    out = tokenize(texts)
+    input_ids = out["input_ids"]
+    attention_mask = out["attention_mask"]
+    (image_names, images) = get_images("../w0d3_chapter0_resnets/resnet_inputs/*")
+    pixel_values = t.stack([preprocess(im) for im in images], dim=0)
+# %%
+def cosine_similarities(a: t.Tensor, b: t.Tensor) -> t.Tensor:
+    '''Return cosine similarities between all pairs of embeddings.
+
+    Each element of the batch should be a unit vector already.
+
+    a: shape (batch_a, hidden_size)
+    b: shape (batch_b, hidden_size)
+    out: shape (batch_a, batch_b)
+    '''
+    return einsum('b1 h, b2 h -> b1 b2', a, b)
+
+
+if MAIN:
+    w5d4_tests.test_cosine_similarity(cosine_similarities)
+# %%
