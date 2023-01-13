@@ -291,3 +291,73 @@ if MAIN:
     importlib.reload(w5d4_tests)
     w5d4_tests.test_vision_transformer(CLIPVisionTransformer)
 # %%
+if MAIN:
+    tokenize = get_reference_model().tokenize
+# %%
+class CLIPModel(nn.Module):
+    config: CLIPConfig
+    text_config: CLIPTextConfig
+    vision_config: CLIPVisionConfig
+    projection_dim: int
+    text_embed_dim: int
+    vision_embed_dim: int
+    text_model: modeling_clip.CLIPTextTransformer
+    vision_model: CLIPVisionTransformer
+    visual_projection: nn.Linear
+    text_projection: nn.Linear
+    logit_scale: nn.Parameter
+
+    def __init__(self, config: CLIPConfig):
+        '''
+        Assign values from input config to class member variables as appropriate.
+
+        The typechecker will complain when passing our CLIPTextConfig to 
+        CLIPTextTransformer, because the latter expects type 
+        transformers.models.clip.configuration_clip.CLIPTextConfig. 
+        You can ignore this as our type is in fact compatible.
+        '''
+        super().__init__()
+        self.config = config
+        self.text_config = config.text_config
+        self.vision_config = config.vision_config
+        self.projection_dim = config.projection_dim
+        self.text_embed_dim = self.text_config.hidden_size
+        self.vision_embed_dim = self.vision_config.hidden_size
+        self.text_model = modeling_clip.CLIPTextTransformer(self.text_config)
+        self.vision_model = CLIPVisionTransformer(self.vision_config)
+        self.text_projection = nn.Linear(
+            in_features=self.text_embed_dim,
+            out_features=self.projection_dim,
+            bias=False,
+        )
+        self.visual_projection = nn.Linear(
+            in_features=self.vision_embed_dim,
+            out_features=self.projection_dim,
+            bias=False,
+        )
+        self.logit_scale = nn.Parameter(t.tensor(config.logit_scale_init_value))
+
+    def forward(self, input_ids, attention_mask, pixel_values) -> CLIPOutput:
+        '''
+        Perform forward pass through CLIP model, applying text and 
+        vision model/projection.
+
+        input_ids: (batch, sequence)
+        attention_mask: (batch, sequence). 1 for visible, 0 for invisible.
+        pixel_values: (batch, channels, height, width)
+        '''
+        text = self.text_model(input_ids, attention_mask)[1]
+        text = self.text_projection(text)
+
+        vision = self.vision_model(pixel_values)
+        vision = self.visual_projection(vision)
+
+        text /= t.linalg.norm(text)
+        vision /= t.linalg.norm(vision)
+
+        return CLIPOutput(text, vision)
+
+
+if MAIN:
+    w5d4_tests.test_clip_model(CLIPModel)
+# %%
