@@ -628,42 +628,78 @@ def latent_sample(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
 
 
 if MAIN:
+    NUM_INFERENCE_STEPS = 1 # FIXME: increase inference timesteps
     SEED = 1
     config = StableDiffusionConfig(t.manual_seed(SEED))
     prompt = ["A digital illustration of a medieval town"]
-    config.num_inference_steps = 10 # FIXME: increase inference timesteps
+    config.num_inference_steps = NUM_INFERENCE_STEPS
     latents = latent_sample(config, len(prompt))
     images = stable_diffusion_inference(pretrained, config, prompt, latents)
     images[0].save("./w5d4_stable_diffusion_image.png")
 #%% [markdown]
 #### Interpolation
 #%%
-def interpolate_embeddings(concat_embeddings: t.Tensor, scale_factor: int) -> t.Tensor:
+def interpolate_embeddings(
+    concat_embeddings: t.Tensor, scale_factor: int
+) -> t.Tensor:
     '''
-    Returns a tensor with `scale_factor`-many interpolated tensors between each pair of adjacent
-    embeddings.
-    concat_embeddings: t.Tensor - Contains uncond_embeddings and text_embeddings concatenated together
-    scale_factor: int - Number of interpolations between pairs of points
+    Returns a tensor with `scale_factor`-many interpolated tensors between 
+    each pair of adjacent embeddings.
+
+    concat_embeddings: t.Tensor 
+        - Contains uncond_embeddings and text_embeddings concatenated together
+    scale_factor: int 
+        - Number of interpolations between pairs of points
     out: t.Tensor 
-        - shape: [2 * scale_factor * (concat_embeddings.shape[0]/2 - 1), *concat_embeddings.shape[1:]]
+        - shape: [
+            2 * scale_factor * (concat_embeddings.shape[0]/2 - 1), 
+            *concat_embeddings.shape[1:]
+        ]
     '''
-    "TODO: YOUR CODE HERE"
-    assert out.shape == (2 * scale_factor * (num_prompts - 1), *text_embeddings.shape[1:])
+    num_prompts = concat_embeddings.shape[0]
+    out_list = []
+    for prompt in range(num_prompts - 1):
+        for sf in range(scale_factor + 1):
+            sf_ratio = float(sf) / scale_factor
+            interp = (
+                (1 - sf_ratio) * concat_embeddings[prompt] + 
+                sf_ratio * concat_embeddings[prompt + 1]
+            )
+            out_list.append(interp)
+    out_list.append(concat_embeddings[-1])   
+            
+    out = t.stack(out_list, dim=0)
+    expected_shape = (
+        scale_factor * (num_prompts - 1) + num_prompts, 
+        *concat_embeddings.shape[1:]
+    )
+    assert out.shape == expected_shape, (
+        f'interpolate_embeddings() bad shape, found={out.shape}, ' 
+        f'expected={expected_shape}, num_prompts={num_prompts}, '
+        f'scale_factor={scale_factor}'
+    )
     return out
 
 
-def run_interpolation(prompts: list[str], scale_factor: int, batch_size: int, latent_fn: Callable) -> list[Image.Image]:
+def run_interpolation(
+    prompts: list[str], scale_factor: int, batch_size: int, latent_fn: Callable
+) -> list[Image.Image]:
     SEED = 1
     config = StableDiffusionConfig(t.manual_seed(SEED))
+    config.num_inference_steps = NUM_INFERENCE_STEPS
     concat_embeddings = tokenize(pretrained, prompts)
-    (uncond_interp, text_interp) = interpolate_embeddings(concat_embeddings, scale_factor).chunk(2)
+    (uncond_interp, text_interp) = interpolate_embeddings(
+        concat_embeddings, scale_factor
+    ).chunk(2)
     split_interp_emb = t.split(text_interp, batch_size, dim=0)
     interpolated_images = []
     for t_emb in tqdm(split_interp_emb):
         concat_split = t.concat([uncond_interp[: t_emb.shape[0]], t_emb])
         config = StableDiffusionConfig(t.manual_seed(SEED))
         latents = latent_fn(config, t_emb.shape[0])
-        interpolated_images += stable_diffusion_inference(pretrained, config, concat_split, latents)
+        interpolated_images += stable_diffusion_inference(
+            pretrained, config, concat_split, latents
+        )
     return interpolated_images
 #%%
 if MAIN:
@@ -682,4 +718,27 @@ def save_gif(images: list[Image.Image], filename):
 
 if MAIN:
     save_gif(interpolated_images, "w5d4_animation1.gif")
+#%%
+def latent_sample_same(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
+    latents = t.randn(
+        (
+            cast(int, pretrained.unet.in_channels), 
+            config.height // 8, 
+            config.width // 8
+        ),
+        generator=config.generator,
+    ).to(DEVICE)
+    latents = repeat(latents, 'c h w -> b c h w', b=batch_size)
+    return latents
+#%%
+if MAIN:
+    prompts = [
+        "a photograph of a cat on a lawn",
+        "a photograph of a dog on a lawn",
+        "a photograph of a bunny on a lawn",
+    ]
+    interpolated_images = run_interpolation(
+        prompts, scale_factor=2, batch_size=2, latent_fn=latent_sample_same
+    )
+    save_gif(interpolated_images, "w3d5_animation2.gif")
 #%%
