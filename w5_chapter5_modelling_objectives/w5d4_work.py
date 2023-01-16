@@ -1,7 +1,6 @@
 #%%
 import glob
 import os
-import sys
 from typing import Callable, Union, cast
 import pandas as pd
 import torch as t
@@ -27,7 +26,7 @@ from w5d4_utils import (
 import importlib
 
 MAIN = __name__ == "__main__"
-device = t.device("cuda" if t.cuda.is_available() else "cpu")
+DEVICE = 'cpu'
 # %%
 def print_class_attrs(cls: type) -> None:
     print(f"\n\n{cls.__name__}\n---")
@@ -122,8 +121,8 @@ def plot_gelu_approximation(x: t.Tensor):
 if MAIN:
     x = t.linspace(-5, 5, 400)
     plot_gelu_approximation(x)
-    if t.cuda.is_available():
-        x16 = t.linspace(-5, 5, 400, dtype=t.float16, device=device)
+    if DEVICE == 'cuda':
+        x16 = t.linspace(-5, 5, 400, dtype=t.float16, device=DEVICE)
         plot_gelu_approximation(x16)
 
 #%%
@@ -418,9 +417,9 @@ def load_trained_model(config: CLIPConfig):
 
 if MAIN:
     config = CLIPConfig(CLIPVisionConfig(), CLIPTextConfig())
-    model = load_trained_model(config).to(device)
+    model = load_trained_model(config).to(DEVICE)
     with t.inference_mode():
-        out = model(input_ids.to(device), attention_mask.to(device), pixel_values.to(device))
+        out = model(input_ids.to(DEVICE), attention_mask.to(DEVICE), pixel_values.to(DEVICE))
     similarities = cosine_similarities(out.text_embeds, out.image_embeds)
     df = pd.DataFrame(similarities.detach().cpu().numpy(), index=texts, columns=image_names).round(3)
     display(df.style.background_gradient(cmap='Reds').format('{:.1%}'))
@@ -456,3 +455,231 @@ if MAIN:
 #### Part 2: Stable diffusion
 #%%
 ################################################################
+import os
+import sys
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Callable, Generic, TypeVar, Union, cast
+from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers.schedulers.scheduling_lms_discrete import LMSDiscreteScheduler
+from PIL import Image
+from tqdm.auto import tqdm
+from transformers import CLIPTextModel, CLIPTokenizer
+from transformers.models.clip import modeling_clip
+
+
+@dataclass
+class StableDiffusionConfig:
+    '''
+    Default configuration for Stable Diffusion.
+
+    guidance_scale is used for classifier-free guidance.
+
+    The sched_ parameters are specific to LMSDiscreteScheduler.
+    '''
+
+    height = 512
+    width = 512
+    num_inference_steps = 100
+    guidance_scale = 7.5
+    sched_beta_start = 0.00085
+    sched_beta_end = 0.012
+    sched_beta_schedule = "scaled_linear"
+    sched_num_train_timesteps = 1000
+
+    def __init__(self, generator: t.Generator):
+        self.generator = generator
+
+T = TypeVar("T", CLIPTokenizer, CLIPTextModel, AutoencoderKL, UNet2DConditionModel)
+
+def load_model(cls: type[T], subfolder: str) -> T:
+    model = cls.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder=subfolder, use_auth_token=True)
+    return cast(T, model)
+
+def load_tokenizer() -> CLIPTokenizer:
+    return load_model(CLIPTokenizer, "tokenizer")
+
+def load_text_encoder() -> CLIPTextModel:
+    return load_model(CLIPTextModel, "text_encoder").to(DEVICE)
+
+def load_vae() -> AutoencoderKL:
+    return load_model(AutoencoderKL, "vae").to(DEVICE)
+
+def load_unet() -> UNet2DConditionModel:
+    return load_model(UNet2DConditionModel, "unet").to(DEVICE)
+#%%
+if MAIN:
+    vae = load_vae()
+    print(vae)
+    del vae
+# %%
+def clip_text_encoder(pretrained: CLIPTextModel) -> modeling_clip.CLIPTextTransformer:
+    pretrained_text_state_dict = OrderedDict([
+        (k[11:], v) for (k, v) in pretrained.state_dict().items()
+    ])
+    clip_config = CLIPConfig(CLIPVisionConfig(), CLIPTextConfig())
+    clip_text_encoder = CLIPModel(clip_config).text_model
+    clip_text_encoder.to(DEVICE)
+    clip_text_encoder.load_state_dict(pretrained_text_state_dict)
+    return clip_text_encoder
+# %%
+@dataclass
+class Pretrained:
+    tokenizer = load_tokenizer()
+    vae = load_vae()
+    unet = load_unet()
+    pretrained_text_encoder = load_text_encoder()
+    text_encoder = clip_text_encoder(pretrained_text_encoder)
+
+if MAIN:
+    pretrained = Pretrained()
+# %%
+def tokenize(pretrained: Pretrained, prompt: list[str]) -> t.Tensor:
+    batch_size = len(prompt)
+    text_input = pretrained.tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=pretrained.tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+    text_embeddings = pretrained.text_encoder(text_input.input_ids.to(DEVICE))[0]
+    max_length = text_input.input_ids.shape[-1]
+
+    uncond_input = pretrained.tokenizer(
+        [""] * batch_size, padding="max_length", max_length=max_length, return_tensors="pt"
+    )
+    uncond_embeddings = pretrained.text_encoder(uncond_input.input_ids.to(DEVICE))[0]   
+
+    return t.cat((uncond_embeddings, text_embeddings))
+#%%
+def get_scheduler(config: StableDiffusionConfig) -> LMSDiscreteScheduler:
+    return LMSDiscreteScheduler(
+        num_train_timesteps=config.sched_num_train_timesteps,
+        beta_start=config.sched_beta_start,
+        beta_end=config.sched_beta_end,
+        beta_schedule=config.sched_beta_schedule,
+    )
+# %%
+def stable_diffusion_inference(
+    pretrained: Pretrained, config: StableDiffusionConfig, prompt: Union[list[str], t.Tensor], 
+    latents: t.Tensor
+) -> list[Image.Image]:
+    scheduler = get_scheduler(config)
+
+    # Call tokenize() to combine with an empty prompt, embed, encode and concatenate
+    if isinstance(prompt, list):
+        text_embeddings = tokenize(pretrained, prompt)
+    elif isinstance(prompt, t.Tensor):
+        text_embeddings = prompt
+    
+    scheduler.set_timesteps(config.num_inference_steps)
+    latents = latents * scheduler.sigmas[0]
+
+    for ts in tqdm(scheduler.timesteps):
+        # Expand/repeat latent embeddings by 2 for classifier-free guidance
+        # The first half will be called with the unconditional embedding
+        # The second half will be called with the actual latent image vectors
+        latent_input = t.cat([latents] * 2)
+        # Divide the result by sqrt(sigma^2 + 1)
+        # print('scale_model_input()')
+        latent_input = scheduler.scale_model_input(
+            latent_input,
+            timestep=ts
+        )
+        with t.inference_mode():
+            # Compute concatenated noise prediction using U-Net, feeding in 
+            # latent input, timestep, and text embeddings
+            noise_pred = pretrained.unet(latent_input, ts, text_embeddings).sample
+        # Split concatenated noise prediction into the 
+        # unconditional and noise portion.
+        # You can use the torch.Tensor.chunk() function for this.
+        uncond_pred, text_pred = noise_pred.chunk(2)
+        # Compute the total noise prediction wrt the guidance scale factor
+        # if guidance_scale=1, then use raw model prediction
+        # if guidance_scale=0, then use the naive unconditional prediction
+        noise_pred = uncond_pred + config.guidance_scale * (text_pred - uncond_pred)
+        # Step to the previous timestep using the scheduler to get the next latent input
+        latents = scheduler.step(noise_pred, ts, latents).prev_sample
+
+    # scale and decode the image latents with vae
+    print('Scaling...')
+    latents = 1 / 0.18215 * latents
+    print('Decoding...')
+    with t.inference_mode():
+        image = pretrained.vae.decode(latents).sample
+    # Rescale resulting image into RGB space
+    print('Rescaling...')
+    image = (image / 2 + 0.5).clamp(0, 1)
+    # Permute dimensions
+    image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
+    images = (image * 255).round().astype("uint8")
+    # Convert to PIL.Image.Image objects for viewing/saving
+    pil_images = [Image.fromarray(image) for image in images]
+    return pil_images
+
+#%%
+def latent_sample(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
+    latents = t.randn(
+        (batch_size, cast(int, pretrained.unet.in_channels), config.height // 8, config.width // 8),
+        generator=config.generator,
+    ).to(DEVICE)
+    return latents
+
+
+if MAIN:
+    SEED = 1
+    config = StableDiffusionConfig(t.manual_seed(SEED))
+    prompt = ["A digital illustration of a medieval town"]
+    config.num_inference_steps = 10 # FIXME: increase inference timesteps
+    latents = latent_sample(config, len(prompt))
+    images = stable_diffusion_inference(pretrained, config, prompt, latents)
+    images[0].save("./w5d4_stable_diffusion_image.png")
+#%% [markdown]
+#### Interpolation
+#%%
+def interpolate_embeddings(concat_embeddings: t.Tensor, scale_factor: int) -> t.Tensor:
+    '''
+    Returns a tensor with `scale_factor`-many interpolated tensors between each pair of adjacent
+    embeddings.
+    concat_embeddings: t.Tensor - Contains uncond_embeddings and text_embeddings concatenated together
+    scale_factor: int - Number of interpolations between pairs of points
+    out: t.Tensor 
+        - shape: [2 * scale_factor * (concat_embeddings.shape[0]/2 - 1), *concat_embeddings.shape[1:]]
+    '''
+    "TODO: YOUR CODE HERE"
+    assert out.shape == (2 * scale_factor * (num_prompts - 1), *text_embeddings.shape[1:])
+    return out
+
+
+def run_interpolation(prompts: list[str], scale_factor: int, batch_size: int, latent_fn: Callable) -> list[Image.Image]:
+    SEED = 1
+    config = StableDiffusionConfig(t.manual_seed(SEED))
+    concat_embeddings = tokenize(pretrained, prompts)
+    (uncond_interp, text_interp) = interpolate_embeddings(concat_embeddings, scale_factor).chunk(2)
+    split_interp_emb = t.split(text_interp, batch_size, dim=0)
+    interpolated_images = []
+    for t_emb in tqdm(split_interp_emb):
+        concat_split = t.concat([uncond_interp[: t_emb.shape[0]], t_emb])
+        config = StableDiffusionConfig(t.manual_seed(SEED))
+        latents = latent_fn(config, t_emb.shape[0])
+        interpolated_images += stable_diffusion_inference(pretrained, config, concat_split, latents)
+    return interpolated_images
+#%%
+if MAIN:
+    prompts = [
+        "a photograph of a cat on a lawn",
+        "a photograph of a dog on a lawn",
+        "a photograph of a bunny on a lawn",
+    ]
+    interpolated_images = run_interpolation(
+        prompts, scale_factor=2, batch_size=1, latent_fn=latent_sample
+    )
+#%%
+def save_gif(images: list[Image.Image], filename):
+    images[0].save(filename, save_all=True, append_images=images[1:], duration=100, loop=0)
+
+
+if MAIN:
+    save_gif(interpolated_images, "w5d4_animation1.gif")
+#%%
