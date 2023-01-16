@@ -700,22 +700,20 @@ def run_interpolation(
         )
     return interpolated_images
 #%%
+def save_gif(images: list[Image.Image], filename):
+    images[0].save(filename, save_all=True, append_images=images[1:], duration=100, loop=0)
+
+#%%
 if MAIN:
     prompts = [
         "a photograph of a cat on a lawn",
         "a photograph of a dog on a lawn",
         "a photograph of a bunny on a lawn",
     ]
-    interpolated_images = run_interpolation(
-        prompts, scale_factor=2, batch_size=1, latent_fn=latent_sample
-    )
-#%%
-def save_gif(images: list[Image.Image], filename):
-    images[0].save(filename, save_all=True, append_images=images[1:], duration=100, loop=0)
-
-
-if MAIN:
-    save_gif(interpolated_images, "w5d4_animation1.gif")
+    # interpolated_images = run_interpolation(
+    #     prompts, scale_factor=2, batch_size=1, latent_fn=latent_sample
+    # )
+    # save_gif(interpolated_images, "w5d4_animation1.gif")
 #%%
 def latent_sample_same(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
     latents = t.randn(
@@ -733,10 +731,10 @@ if MAIN:
     prompts = [
         "a photograph of a cat on a lawn",
         "a photograph of a dog on a lawn",
-        "a photograph of a bunny on a lawn",
+        # "a photograph of a bunny on a lawn",
     ]
     interpolated_images = run_interpolation(
-        prompts, scale_factor=2, batch_size=2, latent_fn=latent_sample_same
+        prompts, scale_factor=2, batch_size=1, latent_fn=latent_sample_same
     )
     save_gif(interpolated_images, "w5d4_animation2.gif")
 #%%
