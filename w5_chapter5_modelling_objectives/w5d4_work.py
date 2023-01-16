@@ -480,7 +480,7 @@ class StableDiffusionConfig:
 
     height = 512
     width = 512
-    num_inference_steps = 100
+    num_inference_steps = 1 # FIXME: increase
     guidance_scale = 7.5
     sched_beta_start = 0.00085
     sched_beta_end = 0.012
@@ -603,13 +603,10 @@ def stable_diffusion_inference(
         latents = scheduler.step(noise_pred, ts, latents).prev_sample
 
     # scale and decode the image latents with vae
-    print('Scaling...')
     latents = 1 / 0.18215 * latents
-    print('Decoding...')
     with t.inference_mode():
         image = pretrained.vae.decode(latents).sample
     # Rescale resulting image into RGB space
-    print('Rescaling...')
     image = (image / 2 + 0.5).clamp(0, 1)
     # Permute dimensions
     image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
@@ -621,18 +618,21 @@ def stable_diffusion_inference(
 #%%
 def latent_sample(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
     latents = t.randn(
-        (batch_size, cast(int, pretrained.unet.in_channels), config.height // 8, config.width // 8),
+        (
+            batch_size, 
+            cast(int, pretrained.unet.in_channels), 
+            config.height // 8, 
+            config.width // 8
+        ),
         generator=config.generator,
     ).to(DEVICE)
     return latents
 
 
 if MAIN:
-    NUM_INFERENCE_STEPS = 1 # FIXME: increase inference timesteps
     SEED = 1
     config = StableDiffusionConfig(t.manual_seed(SEED))
     prompt = ["A digital illustration of a medieval town"]
-    config.num_inference_steps = NUM_INFERENCE_STEPS
     latents = latent_sample(config, len(prompt))
     images = stable_diffusion_inference(pretrained, config, prompt, latents)
     images[0].save("./w5d4_stable_diffusion_image.png")
@@ -685,8 +685,6 @@ def run_interpolation(
     prompts: list[str], scale_factor: int, batch_size: int, latent_fn: Callable
 ) -> list[Image.Image]:
     SEED = 1
-    config = StableDiffusionConfig(t.manual_seed(SEED))
-    config.num_inference_steps = NUM_INFERENCE_STEPS
     concat_embeddings = tokenize(pretrained, prompts)
     (uncond_interp, text_interp) = interpolate_embeddings(
         concat_embeddings, scale_factor
@@ -740,5 +738,5 @@ if MAIN:
     interpolated_images = run_interpolation(
         prompts, scale_factor=2, batch_size=2, latent_fn=latent_sample_same
     )
-    save_gif(interpolated_images, "w3d5_animation2.gif")
+    save_gif(interpolated_images, "w5d4_animation2.gif")
 #%%
