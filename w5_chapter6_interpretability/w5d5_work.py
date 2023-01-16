@@ -116,3 +116,23 @@ if MAIN:
         assert expected == actual, f"{parens}: expected {expected} got {actual}"
     print("is_balanced_forloop ok!")
 # %%
+def is_balanced_vectorized(tokens: t.Tensor) -> bool:
+    '''
+    tokens: 
+        sequence of tokens including begin, end and pad tokens 
+        - recall that 3 is '(' and 4 is ')'
+    '''
+    level_diffs = t.where(
+        tokens == 3,
+        1,
+        t.where(tokens == 4, -1, 0)
+    )
+    levels = level_diffs.cumsum(dim=-1)
+    return (levels >= 0).all() and levels[-1] == 0
+
+if MAIN:
+    for (tokens, expected) in zip(tokenizer.tokenize(examples), labels):
+        actual = is_balanced_vectorized(tokens)
+        assert expected == actual, f"{tokens}: expected {expected} got {actual}"
+    print("is_balanced_vectorized ok!")
+# %%
