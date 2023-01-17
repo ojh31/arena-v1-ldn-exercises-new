@@ -167,6 +167,8 @@ def get_post_final_ln_dir(model: ParenTransformer) -> t.Tensor:
     identify the direction in the space that goes into the linear layer (and out of the LN) 
     corresponding to an 'unbalanced' classification. 
     Hint: this is a one line function.
+
+    out: shape (e=56, )
     '''
     return (model.decoder.weight[0, :] - model.decoder.weight[1, :])
 # %%
@@ -232,3 +234,74 @@ if MAIN:
     (final_ln_fit, r2) = get_ln_fit(model, data, model.norm, seq_pos=0)
     print("r^2: ", r2)
     w5d5_tests.test_final_ln_fit(model, data, get_ln_fit)
+# %%
+def get_pre_final_ln_dir(model: ParenTransformer, data: DataSet) -> t.Tensor:
+    '''
+    x_norm -> (ln) x_linear -> (linear and softmax) logit_diff
+    logit_diff is maximised by post_final_ln_dir: shape (e=56, )
+    post_final_ln_dir is maximised by ... in seq_pos=0
+
+    pre_final_ln_dir: shape (e, ) = (56, )
+    L: shape (e, e) = (56, 56)
+    post_final_ln_dir: shape (e, ) = (56, )
+    '''
+    post_final_ln_dir = get_post_final_ln_dir(model)
+    ln_fit, _ = get_ln_fit(model, data, model.norm, seq_pos=0)
+    L = t.tensor(ln_fit.coef_)
+    pre_final_ln_dir = post_final_ln_dir @ L
+    return pre_final_ln_dir
+
+
+if MAIN:
+    w5d5_tests.test_pre_final_ln_dir(model, data, get_pre_final_ln_dir)
+# %%
+def get_out_by_head(
+    model: ParenTransformer, data: DataSet, layer: int
+) -> t.Tensor:
+    '''
+    Get the output of the heads in a particular layer when the model is run on the data.
+    Returns a tensor of shape (batch, num_heads, seq, embed_width)
+    '''
+    W_O = model.layers[layer].self_attn.W_O
+    r = get_inputs(model, data, W_O)
+    r_block = rearrange(
+        r, 
+        'b s (n h)-> b n s h', 
+        n=model.nhead,
+    ) # split up the rows of r
+    W_block = rearrange(
+        W_O.weight, 
+        'e (n h) -> n e h', 
+        n=model.nhead,
+    ) # split up the columns of W_O
+    out = einsum(
+        'n e h, b n s h-> b n s e', 
+        W_block, 
+        r_block,
+    ) # The common dim in the matmuls here is h
+    return out
+
+if MAIN:
+    w5d5_tests.test_get_out_by_head(get_out_by_head, model, data)
+# %%
+def get_out_by_components(model: ParenTransformer, data: DataSet) -> t.Tensor:
+    '''
+    Computes a tensor of shape [10, dataset_size, seq_pos, emb] representing 
+    the output of the model's components when run on the data.
+
+    The first dimension is [
+        embeddings, head 0.0, head 0.1, mlp 0, head 1.0, head 1.1, mlp 1, head 2.0, head 2.1, mlp 2
+    ]
+    '''
+    embeddings = get_outputs(model, data, model.pos_encoder).unsqueeze(dim=1)
+    output = [embeddings]
+    for i, layer in enumerate(model.layers):
+        output.append(get_out_by_head(model, data, i))
+        output.append(get_outputs(model, data, layer.linear2).unsqueeze(dim=1))
+    o_tensor = t.cat(output, dim=1)
+    o_tensor = rearrange(o_tensor, 'b c s e -> c b s e')
+    return o_tensor
+
+if MAIN:
+    w5d5_tests.test_get_out_by_component(get_out_by_components, model, data)
+# %%
