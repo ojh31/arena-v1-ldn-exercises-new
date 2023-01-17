@@ -348,7 +348,6 @@ def hists_per_comp(magnitudes, data, n_layers=3, xaxis_range=(-1, 1)):
     fig.show()
 
 if MAIN:
-    "TODO: YOUR CODE HERE"
     '''
     magnitudes: shape [10, dataset_size]
     dot product of the component's output with the unbalanced direction on this sample
@@ -363,4 +362,40 @@ if MAIN:
     magnitudes = (magnitudes.T - means.T).T.detach()
     assert "magnitudes" in locals(), "You need to define `magnitudes`"
     hists_per_comp(magnitudes, data, xaxis_range=[-10, 20])
+# %%
+if MAIN:
+    # We read right to left and want 4s to have a matching 3
+    token_arr = t.flip(data.toks, (1, )) # flip seq dim
+    elevation_diffs = t.where(
+        token_arr == 4,
+        1,
+        t.where(token_arr == 3, -1, 0)
+    )
+    elevation = elevation_diffs.cumsum(dim=-1)
+    negative_failure = (elevation < 0).any(dim=1) # shape [dataset,]
+    total_elevation_failure = elevation[:, -1] != 0 # shape [dataset,]
+    h20_in_d = magnitudes[-3, :]
+    h21_in_d = magnitudes[-2, :]
+
+    failure_types = np.full(len(h20_in_d), "", dtype=np.dtype("U32"))
+    failure_types_dict = {
+        "both failures": negative_failure & total_elevation_failure,
+        "just neg failure": negative_failure & ~total_elevation_failure,
+        "just total elevation failure": ~negative_failure & total_elevation_failure,
+        "balanced": ~negative_failure & ~total_elevation_failure
+    }
+    for name, mask in failure_types_dict.items():
+        failure_types = np.where(mask, name, failure_types)
+    failures_df = pd.DataFrame({
+        "Head 2.0 contribution": h20_in_d,
+        "Head 2.1 contribution": h21_in_d,
+        "Failure type": failure_types
+    })[data.starts_open.tolist()]
+    fig = px.scatter(
+        failures_df, 
+        x="Head 2.0 contribution", y="Head 2.1 contribution", color="Failure type", 
+        title="h20 vs h21 for different failure types", template="simple_white", height=600, width=800,
+        category_orders={"color": failure_types_dict.keys()}
+    ).update_traces(marker_size=4)
+    fig.show()
 # %%
