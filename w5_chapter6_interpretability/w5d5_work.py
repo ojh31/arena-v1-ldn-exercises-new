@@ -399,3 +399,11 @@ if MAIN:
     ).update_traces(marker_size=4)
     fig.show()
 # %%
+if MAIN:
+    fig = px.scatter(
+        x=data.open_proportion, y=h20_in_d, color=failure_types, 
+        title="Head 2.0 contribution vs proportion of open brackets '('", template="simple_white", height=500, width=800,
+        labels={"x": "Open-proportion", "y": "Head 2.0 contribution"}, category_orders={"color": failure_types_dict.keys()}
+    ).update_traces(marker_size=4, opacity=0.5).update_layout(legend_title_text='Failure type')
+    fig.show()
+# %%
