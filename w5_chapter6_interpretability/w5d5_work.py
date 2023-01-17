@@ -205,3 +205,30 @@ if MAIN:
     w5d5_tests.test_get_inputs(get_inputs, model, data)
     w5d5_tests.test_get_outputs(get_outputs, model, data)
 # %%
+def get_ln_fit(
+    model: ParenTransformer, data: DataSet, ln_module: nn.LayerNorm, seq_pos: Union[None, int]
+) -> Tuple[LinearRegression, t.Tensor]:
+    '''
+    if seq_pos is None, find best fit for all sequence positions. 
+    Otherwise, fit only for given seq_pos.
+
+    Returns: A tuple of 
+        - a (fitted) sklearn LinearRegression object
+        - a dimensionless tensor containing the r^2 of the fit (hint: 
+            wrap a value in torch.tensor() to make a dimensionless tensor)
+    '''
+    inputs = get_inputs(model, data, ln_module)
+    outputs = get_outputs(model, data, ln_module)
+    if seq_pos is not None:
+        inputs = inputs[:, seq_pos, :]
+        outputs = outputs[:, seq_pos, :]
+    lr = LinearRegression()
+    lr.fit(inputs, outputs)
+    r2 = t.tensor(lr.score(inputs, outputs))
+    return (lr, r2)
+
+
+if MAIN:
+    (final_ln_fit, r2) = get_ln_fit(model, data, model.norm, seq_pos=0)
+    print("r^2: ", r2)
+    w5d5_tests.test_final_ln_fit(model, data, get_ln_fit)
