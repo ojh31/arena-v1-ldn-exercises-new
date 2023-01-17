@@ -25,7 +25,9 @@ MAIN = __name__ == "__main__"
 DEVICE = t.device("cpu")
 # %%
 if MAIN:
-    model = ParenTransformer(ntoken=5, nclasses=2, d_model=56, nhead=2, d_hid=56, nlayers=3).to(DEVICE)
+    model = ParenTransformer(
+        ntoken=5, nclasses=2, d_model=56, nhead=2, d_hid=56, nlayers=3
+    ).to(DEVICE)
     state_dict = t.load("w5d5_balanced_brackets_state_dict.pt")
     model.to(DEVICE)
     model.load_simple_transformer_state_dict(state_dict)
@@ -135,4 +137,71 @@ if MAIN:
         actual = is_balanced_vectorized(tokens)
         assert expected == actual, f"{tokens}: expected {expected} got {actual}"
     print("is_balanced_vectorized ok!")
+# %%
+if MAIN:
+    toks = tokenizer.tokenize(examples).to(DEVICE)
+    out = model(toks)
+    prob_balanced = out.exp()[:, 1]
+    print("Model confidence:\n" + "\n".join([f"{ex:34} : {prob:.4%}" for ex, prob in zip(examples, prob_balanced)]))
+
+def run_model_on_data(model: ParenTransformer, data: DataSet, batch_size: int = 200) -> t.Tensor:
+    '''Return probability that each example is balanced'''
+    ln_probs = []
+    for i in range(0, len(data.strs), batch_size):
+        toks = data.toks[i : i + batch_size]
+        with t.no_grad():
+            out = model(toks)
+        ln_probs.append(out)
+    out = t.cat(ln_probs).exp()
+    assert out.shape == (len(data), 2)
+    return out
+
+if MAIN:
+    test_set = data
+    n_correct = t.sum((run_model_on_data(model, test_set).argmax(-1) == test_set.isbal).int())
+    print(f"\nModel got {n_correct} out of {len(data)} training examples correct!")
+# %%
+def get_post_final_ln_dir(model: ParenTransformer) -> t.Tensor:
+    '''
+    Use the weights of the final linear layer (model.decoder) to 
+    identify the direction in the space that goes into the linear layer (and out of the LN) 
+    corresponding to an 'unbalanced' classification. 
+    Hint: this is a one line function.
+    '''
+    return (model.decoder.weight[0, :] - model.decoder.weight[1, :])
+# %%
+def get_inputs(model: ParenTransformer, data: DataSet, module: nn.Module) -> t.Tensor:
+    '''
+    Get the inputs to a particular submodule of the model when run on the data.
+    Returns a tensor of size (data_pts, seq_pos, emb_size).
+    '''
+    inputs = []
+    def hook(hook_module: nn.Module, input: Tuple, output: t.Tensor) -> None:
+        assert hook_module == module
+        for inp in input:
+            inputs.append(inp)
+
+    handle = module.register_forward_hook(hook)
+    run_model_on_data(model, data)
+    handle.remove()
+    return t.cat(inputs)
+
+def get_outputs(model: ParenTransformer, data: DataSet, module: nn.Module) -> t.Tensor:
+    '''
+    Get the outputs from a particular submodule of the model when run on the data.
+    Returns a tensor of size (data_pts, seq_pos, emb_size).
+    '''
+    outputs = []
+    def hook(hook_module: nn.Module, input: Tuple, output: t.Tensor) -> None:
+        assert hook_module == module
+        outputs.append(output)
+
+    handle = module.register_forward_hook(hook)
+    run_model_on_data(model, data)
+    handle.remove()
+    return t.cat(outputs)
+
+if MAIN:
+    w5d5_tests.test_get_inputs(get_inputs, model, data)
+    w5d5_tests.test_get_outputs(get_outputs, model, data)
 # %%
