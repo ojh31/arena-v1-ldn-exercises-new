@@ -305,3 +305,62 @@ def get_out_by_components(model: ParenTransformer, data: DataSet) -> t.Tensor:
 if MAIN:
     w5d5_tests.test_get_out_by_component(get_out_by_components, model, data)
 # %%
+def hists_per_comp(magnitudes, data, n_layers=3, xaxis_range=(-1, 1)):
+    num_comps = magnitudes.shape[0]
+    titles = {
+        (1, 1): "embeddings",
+        (2, 1): "head 0.0",
+        (2, 2): "head 0.1",
+        (2, 3): "mlp 0",
+        (3, 1): "head 1.0",
+        (3, 2): "head 1.1",
+        (3, 3): "mlp 1",
+        (4, 1): "head 2.0",
+        (4, 2): "head 2.1",
+        (4, 3): "mlp 2"
+    }
+    assert num_comps == len(titles)
+
+    fig = make_subplots(rows=n_layers+1, cols=3)
+    for ((row, col), title), mag in zip(titles.items(), magnitudes):
+        if row == n_layers+2: break
+        fig.add_trace(
+            go.Histogram(
+                x=mag[data.isbal].numpy(), name="Balanced", marker_color="blue", opacity=0.5, 
+                legendgroup = '1', showlegend=title=="embeddings"
+            ), 
+            row=row, 
+            col=col)
+        fig.add_trace(
+            go.Histogram(
+                x=mag[~data.isbal].numpy(), name="Unbalanced", marker_color="red", opacity=0.5, 
+                legendgroup = '2', showlegend=title=="embeddings"
+            ), 
+            row=row, 
+            col=col
+        )
+        fig.update_xaxes(title_text=title, row=row, col=col, range=xaxis_range)
+    fig.update_layout(
+        width=1200, height=250*(n_layers+1), barmode="overlay", 
+        legend=dict(yanchor="top", y=0.92, xanchor="left", x=0.4), 
+        title="Histograms of component significance"
+    )
+    fig.show()
+
+if MAIN:
+    "TODO: YOUR CODE HERE"
+    '''
+    magnitudes: shape [10, dataset_size]
+    dot product of the component's output with the unbalanced direction on this sample
+    normalize it by subtracting the mean of the dot product of this component's output with 
+    the unbalanced direction on balanced samples
+    '''
+    out_by_comp = get_out_by_components(model, data) # shape [10, dataset_size, seq_pos, emb]
+    zero_by_comp = out_by_comp[:, :, 0, :].squeeze() # shape [10, dataset_size, emb]
+    unbal_dir = get_pre_final_ln_dir(model, data) # shape [emb]
+    magnitudes = einsum('c d e, e -> c d', zero_by_comp, unbal_dir) # shape [10, dataset_size]
+    means = magnitudes[:, data.isbal].mean(axis=1)
+    magnitudes = (magnitudes.T - means.T).T.detach()
+    assert "magnitudes" in locals(), "You need to define `magnitudes`"
+    hists_per_comp(magnitudes, data, xaxis_range=[-10, 20])
+# %%
