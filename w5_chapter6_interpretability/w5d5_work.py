@@ -629,3 +629,16 @@ if MAIN:
     w5d5_tests.qk_test(model, get_Q_and_K)
     w5d5_tests.test_qk_calc_termwise(model, tokenizer, qk_calc_termwise)
 # %%
+def embedding(model: ParenTransformer, tokenizer: SimpleTokenizer, char: str) -> torch.Tensor:
+    '''
+    out: shape [1, emb_dim]
+    '''
+    assert char in ("(", ")")
+    token = tokenizer.t_to_i[char]
+    tokens = t.tensor([token])
+    emb = model.encoder(tokens)
+    return emb
+
+if MAIN:
+    w5d5_tests.embedding_test(model, tokenizer, embedding)
+# %%
