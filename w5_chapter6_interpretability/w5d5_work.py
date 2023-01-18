@@ -584,3 +584,48 @@ if MAIN:
     for layer in range(2):
         plot_neurons(model, data, failure_types, layer)
 # %%
+def get_Q_and_K(
+    model: ParenTransformer, layer: int, head: int
+) -> Tuple[t.Tensor, t.Tensor]:
+    '''
+    Get the Q and K weight matrices for the attention head at the given indices.
+
+    Return: Tuple of two tensors, both with shape (embedding_size, head_size)
+    '''
+    head_size = model.d_model // model.nhead
+    head_indices = np.arange(head * head_size, (head + 1) * head_size)
+    attn = model.layers[layer].self_attn
+    q = attn.W_Q.weight[head_indices, :].T
+    k = attn.W_K.weight[head_indices, :].T
+    return (q, k)
+
+
+def qk_calc_termwise(
+    model: ParenTransformer, layer: int, head: int, 
+    q_embedding: t.Tensor, k_embedding: t.Tensor
+) -> t.Tensor:
+    '''
+    Get the pre-softmax attention scores that would be calculated by 
+    the given attention head from the given embeddings.
+
+    q_embedding: tensor of shape (seq_len, embedding_size)
+    k_embedding: tensor of shape (seq_len, embedding_size)
+
+    Returns: tensor of shape (seq_len, seq_len)
+    '''
+    q, k = get_Q_and_K(model, layer, head)
+    qx = einsum('e h, s e -> s h', q, q_embedding)
+    kx = einsum('e h, s e -> s h', k, k_embedding)
+
+    a = einsum(
+        "seqQ h, seqK h -> seqQ seqK", 
+        qx, 
+        kx,
+    ) / (q.shape[-1] ** 0.5)
+    return a
+
+
+if MAIN:
+    w5d5_tests.qk_test(model, get_Q_and_K)
+    w5d5_tests.test_qk_calc_termwise(model, tokenizer, qk_calc_termwise)
+# %%
