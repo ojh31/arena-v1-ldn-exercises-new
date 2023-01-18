@@ -525,9 +525,9 @@ def out_by_neuron(model: ParenTransformer, data: DataSet, layer: int):
     Bx = einsum('h m, b s m -> b s h', B, x)
     f_Bx_c = f(Bx + c) # shape [b, s, d_hid]
     f_Bx_c_A = einsum('b s h, m h -> b s h m', f_Bx_c, A)
-    return d + f_Bx_c_A
+    return f_Bx_c_A
 
-@functools.cache
+# @functools.cache
 def out_by_neuron_in_20_dir(
     model: ParenTransformer, data: DataSet, layer: int,
 ):
@@ -553,12 +553,19 @@ def plot_neurons(model, data, failure_types, layer):
     })
     px.scatter(
         df, 
-        x="Open-proportion", y="Output in 2.0 direction", color="Failure type", animation_frame="Neuron number",
+        x="Open-proportion", y="Output in 2.0 direction", 
+        color="Failure type", 
+        animation_frame="Neuron number",
         title=f"Neuron contributions from layer {layer}", 
-        template="simple_white", height=500, width=800
-    ).update_traces(marker_size=3).update_layout(xaxis_range=[0, 1], yaxis_range=[-5, 5]).show()
+        template="simple_white", 
+        height=500, 
+        width=800
+    ).update_traces(marker_size=3).update_layout(
+        xaxis_range=[0, 1], yaxis_range=[-5, 5]
+    ).show()
 
-    # Work out the importance (average difference in unbalanced contribution between balanced and inbalanced dirs) for each neuron
+    # Work out the importance (average difference in unbalanced contribution between 
+    # balanced and inbalanced dirs) for each neuron
     # Plot a bar chart of the per-neuron importances
     neuron_importances = neurons_in_d[~data.isbal[data.starts_open]].mean(0) - neurons_in_d[data.isbal[data.starts_open]].mean(0)
     px.bar(
