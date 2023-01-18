@@ -496,3 +496,84 @@ if MAIN:
     pre_20_mags = (pre_20_mags.T - pre_20_means.T).T.detach()
     hists_per_comp(pre_20_mags, data, n_layers=2, xaxis_range=(-7, 7))
 # %%
+def mlp_attribution_scatter(magnitudes, data, failure_types):
+    for layer in range(2):
+        fig = px.scatter(
+            x=data.open_proportion[data.starts_open], y=magnitudes[3+layer*3, data.starts_open], 
+            color=failure_types[data.starts_open], category_orders={"color": failure_types_dict.keys()},
+            title=f"Amount MLP {layer} writes in unbalanced direction for Head 2.0", 
+            template="simple_white", height=500, width=800,
+            labels={"x": "Open-proportion", "y": "Head 2.0 contribution"}
+        ).update_traces(marker_size=4, opacity=0.5).update_layout(legend_title_text='Failure type')
+        fig.show()
+
+if MAIN:
+    mlp_attribution_scatter(pre_20_mags, data, failure_types)
+# %%
+def out_by_neuron(model: ParenTransformer, data: DataSet, layer: int):
+    '''
+    Return shape: [len(data), seq_len, neurons, out]
+    '''
+    x = get_inputs(
+        model, data, model.layers[layer].linear1
+    ) # shape [b, s, d_model]
+    B = model.layers[layer].linear1.weight # shape [d_hid, d_mod]
+    c = model.layers[layer].linear1.bias # shape [d_hid]
+    A = model.layers[layer].linear2.weight # shape [d_mod, d_hid]
+    d = model.layers[layer].linear2.bias # shape [d_mod]
+    f = model.layers[layer].activation
+    Bx = einsum('h m, b s m -> b s h', B, x)
+    f_Bx_c = f(Bx + c) # shape [b, s, d_hid]
+    f_Bx_c_A = einsum('b s h, m h -> b s h m', f_Bx_c, A)
+    return d + f_Bx_c_A
+
+@functools.cache
+def out_by_neuron_in_20_dir(
+    model: ParenTransformer, data: DataSet, layer: int,
+):
+    neuron_outs = out_by_neuron(model, data, layer)
+    pre_20_dir = get_pre_20_dir(model, data)
+    dot = einsum('b s h m, m -> b s h', neuron_outs, pre_20_dir)
+    return dot
+#%%
+def plot_neurons(model, data, failure_types, layer):
+    # Get neuron significances for head 2.0, sequence position #1 output
+    neurons_in_d = out_by_neuron_in_20_dir(model, data, layer)[data.starts_open, 1, :].detach()
+
+    # Get data that can be turned into a dataframe (plotly express is sometimes easier to use with a dataframe)
+    # Plot a scatter plot of all the neuron contributions, color-coded according to failure type, with slider to view neurons
+    neuron_numbers = repeat(t.arange(model.d_model), "n -> (s n)", s=data.starts_open.sum())
+    failure_types = repeat(failure_types[data.starts_open], "s -> (s n)", n=model.d_model)
+    data_open_proportion = repeat(data.open_proportion[data.starts_open], "s -> (s n)", n=model.d_model)
+    df = pd.DataFrame({
+        "Output in 2.0 direction": neurons_in_d.flatten(),
+        "Neuron number": neuron_numbers,
+        "Open-proportion": data_open_proportion,
+        "Failure type": failure_types
+    })
+    px.scatter(
+        df, 
+        x="Open-proportion", y="Output in 2.0 direction", color="Failure type", animation_frame="Neuron number",
+        title=f"Neuron contributions from layer {layer}", 
+        template="simple_white", height=500, width=800
+    ).update_traces(marker_size=3).update_layout(xaxis_range=[0, 1], yaxis_range=[-5, 5]).show()
+
+    # Work out the importance (average difference in unbalanced contribution between balanced and inbalanced dirs) for each neuron
+    # Plot a bar chart of the per-neuron importances
+    neuron_importances = neurons_in_d[~data.isbal[data.starts_open]].mean(0) - neurons_in_d[data.isbal[data.starts_open]].mean(0)
+    px.bar(
+        x=t.arange(model.d_model), 
+        y=neuron_importances, 
+        title=f"Importance of neurons in layer {layer}", 
+        labels={"x": "Neuron number", "y": "Mean contribution in unbalanced dir"},
+        template="simple_white", 
+        height=400, 
+        width=600, 
+        hover_name=t.arange(model.d_model), 
+        # hovermode="x unified"
+    ).show()
+
+if MAIN:
+    for layer in range(2):
+        plot_neurons(model, data, failure_types, layer)
+# %%
