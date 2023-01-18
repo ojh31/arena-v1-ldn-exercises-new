@@ -160,6 +160,8 @@ if MAIN:
     test_set = data
     n_correct = t.sum((run_model_on_data(model, test_set).argmax(-1) == test_set.isbal).int())
     print(f"\nModel got {n_correct} out of {len(data)} training examples correct!")
+#%% [markdown]
+#### Part 2: Moving backwards
 # %%
 def get_post_final_ln_dir(model: ParenTransformer) -> t.Tensor:
     '''
@@ -406,4 +408,83 @@ if MAIN:
         labels={"x": "Open-proportion", "y": "Head 2.0 contribution"}, category_orders={"color": failure_types_dict.keys()}
     ).update_traces(marker_size=4, opacity=0.5).update_layout(legend_title_text='Failure type')
     fig.show()
+# %% [markdown]
+#### Part 3: Total Elevation Circuit
+#%%
+def get_attn_probs(
+    model: ParenTransformer, tokenizer: SimpleTokenizer, data: DataSet, layer: int, head: int
+) -> t.Tensor:
+    '''
+    Returns: (N_SAMPLES, max_seq_len, max_seq_len) tensor that sums to 1 over the last dimension.
+    '''
+    attn_layer = model.layers[layer].self_attn
+    attention_inputs = get_inputs(
+        model, data,attn_layer
+    ) # shape (batch, seq, hidden_size)
+    attn_scores = attn_layer.attention_pattern_pre_softmax(attention_inputs) # shape [b, n, s, s]
+    padding_mask = data.toks == tokenizer.PAD_TOKEN
+    additive_mask = t.where(padding_mask, -10000, 0)[:, None, None, :] 
+    attn_scores += additive_mask
+    attention_probabilities = attn_scores.softmax(dim=-1)[:, head, :, :].squeeze() # shape [b, s, s]
+    return attention_probabilities.detach()
+
+
+if MAIN:
+    attn_probs = get_attn_probs(model, tokenizer, data, 2, 0)
+    attn_probs_open = attn_probs[data.starts_open].mean(0)[[0]]
+    px.bar(
+        y=attn_probs_open.squeeze().numpy(), 
+        labels={"y": "Probability", "x": "Key Position"},
+        template="simple_white", 
+        height=500, 
+        width=600, 
+        title="Avg Attention Probabilities for '(' query from query 0",
+    ).update_layout(showlegend=False, hovermode='x unified').show()
+# %%
+def get_WV(model: ParenTransformer, layer: int, head: int) -> t.Tensor:
+    '''
+    Returns the W_V matrix of a head. 
+    Should be a CPU tensor of size (d_model / num_heads, d_model)
+    '''
+    w_v = model.layers[layer].self_attn.W_V.weight # shape [nh, nh]
+    head_size = model.d_model // model.nhead
+    head_indices = np.arange(head * head_size, (head + 1) * head_size)
+    return w_v[head_indices, :].detach().to(device='cpu')
+
+def get_WO(model: ParenTransformer, layer: int, head: int) -> t.Tensor:
+    '''
+    Returns the W_O matrix of a head. 
+    Should be a CPU tensor of size (d_model, d_model / num_heads)
+    '''
+    w_o = model.layers[layer].self_attn.W_O.weight
+    head_size = model.d_model // model.nhead
+    head_indices = np.arange(head * head_size, (head + 1) * head_size)
+    return w_o[:, head_indices].detach().to(device='cpu')
+
+def get_WOV(model: ParenTransformer, layer: int, head: int) -> t.Tensor:
+    '''
+    out: shape [d_model, d_model]
+    '''
+    return get_WO(model, layer, head) @ get_WV(model, layer, head)
+
+def get_pre_20_dir(model, data):
+    '''
+    Returns the direction propagated back through the OV matrix of 2.0 and 
+    then through the layernorm before the layer 2 attention heads.
+    out: numpy array shape [nh]
+    '''
+    pre_final_ln_dir = get_pre_final_ln_dir(model, data).detach() # shape [nh]
+    ln_fit, _ = get_ln_fit(model, data, model.layers[2].norm1, seq_pos=1)
+    L = ln_fit.coef_ # shape [nh, nh]
+    w_ov = get_WOV(model, layer=2, head=0).detach() # shape [nh, nh]
+    return (pre_final_ln_dir @ w_ov @ L) # shape [nh]
+
+if MAIN:
+    w5d5_tests.test_get_WV(model, get_WV)
+    w5d5_tests.test_get_WO(model, get_WO)
+    w5d5_tests.test_get_pre_20_dir(model, data, get_pre_20_dir)
+
+if MAIN:
+    assert "magnitudes" in locals()
+    hists_per_comp(magnitudes, data, n_layers=2, xaxis_range=(-7, 7))
 # %%
