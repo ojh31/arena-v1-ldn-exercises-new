@@ -358,12 +358,13 @@ if MAIN:
     '''
     out_by_comp = get_out_by_components(model, data) # shape [10, dataset_size, seq_pos, emb]
     zero_by_comp = out_by_comp[:, :, 0, :].squeeze() # shape [10, dataset_size, emb]
-    unbal_dir = get_pre_final_ln_dir(model, data) # shape [emb]
-    magnitudes = einsum('c d e, e -> c d', zero_by_comp, unbal_dir) # shape [10, dataset_size]
-    means = magnitudes[:, data.isbal].mean(axis=1)
-    magnitudes = (magnitudes.T - means.T).T.detach()
-    assert "magnitudes" in locals(), "You need to define `magnitudes`"
-    hists_per_comp(magnitudes, data, xaxis_range=[-10, 20])
+    pre_final_ln_dir = get_pre_final_ln_dir(model, data) # shape [emb]
+    pre_final_ln_mags = einsum(
+        'c d e, e -> c d', zero_by_comp, pre_final_ln_dir
+    ) # shape [10, dataset_size]
+    pre_final_ln_means = pre_final_ln_mags[:, data.isbal].mean(axis=1)
+    pre_final_ln_mags = (pre_final_ln_mags.T - pre_final_ln_means.T).T.detach()
+    hists_per_comp(pre_final_ln_mags, data, xaxis_range=[-10, 20])
 # %%
 if MAIN:
     # We read right to left and want 4s to have a matching 3
@@ -376,8 +377,8 @@ if MAIN:
     elevation = elevation_diffs.cumsum(dim=-1)
     negative_failure = (elevation < 0).any(dim=1) # shape [dataset,]
     total_elevation_failure = elevation[:, -1] != 0 # shape [dataset,]
-    h20_in_d = magnitudes[-3, :]
-    h21_in_d = magnitudes[-2, :]
+    h20_in_d = pre_final_ln_mags[-3, :]
+    h21_in_d = pre_final_ln_mags[-2, :]
 
     failure_types = np.full(len(h20_in_d), "", dtype=np.dtype("U32"))
     failure_types_dict = {
@@ -485,6 +486,13 @@ if MAIN:
     w5d5_tests.test_get_pre_20_dir(model, data, get_pre_20_dir)
 
 if MAIN:
-    assert "magnitudes" in locals()
-    hists_per_comp(magnitudes, data, n_layers=2, xaxis_range=(-7, 7))
+    out_by_comp = get_out_by_components(model, data) # shape [10, dataset_size, seq_pos, emb]
+    zero_by_comp = out_by_comp[:, :, 0, :].squeeze() # shape [10, dataset_size, emb]
+    pre_20_dir = get_pre_20_dir(model, data) # shape [emb]
+    pre_20_mags = einsum(
+        'c d e, e -> c d', zero_by_comp, pre_20_dir
+    ) # shape [10, dataset_size]
+    pre_20_means = pre_20_mags[:, data.isbal].mean(axis=1)
+    pre_20_mags = (pre_20_mags.T - pre_20_means.T).T.detach()
+    hists_per_comp(pre_20_mags, data, n_layers=2, xaxis_range=(-7, 7))
 # %%
