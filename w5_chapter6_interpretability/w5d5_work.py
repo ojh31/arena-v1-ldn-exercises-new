@@ -413,20 +413,26 @@ if MAIN:
 #### Part 3: Total Elevation Circuit
 #%%
 def get_attn_probs(
-    model: ParenTransformer, tokenizer: SimpleTokenizer, data: DataSet, layer: int, head: int
+    model: ParenTransformer, tokenizer: SimpleTokenizer, data: DataSet, 
+    layer: int, head: int,
 ) -> t.Tensor:
     '''
-    Returns: (N_SAMPLES, max_seq_len, max_seq_len) tensor that sums to 1 over the last dimension.
+    Returns: (N_SAMPLES, max_seq_len, max_seq_len) tensor that 
+    sums to 1 over the last dimension.
     '''
     attn_layer = model.layers[layer].self_attn
     attention_inputs = get_inputs(
-        model, data,attn_layer
+        model, data, attn_layer
     ) # shape (batch, seq, hidden_size)
-    attn_scores = attn_layer.attention_pattern_pre_softmax(attention_inputs) # shape [b, n, s, s]
+    attn_scores = attn_layer.attention_pattern_pre_softmax(
+        attention_inputs
+    ) # shape [b, n, s, s]
     padding_mask = data.toks == tokenizer.PAD_TOKEN
     additive_mask = t.where(padding_mask, -10000, 0)[:, None, None, :] 
     attn_scores += additive_mask
-    attention_probabilities = attn_scores.softmax(dim=-1)[:, head, :, :].squeeze() # shape [b, s, s]
+    attention_probabilities = attn_scores.softmax(
+        dim=-1
+    )[:, head, :, :].squeeze() # shape [b, s, s]
     return attention_probabilities.detach()
 
 
@@ -641,4 +647,110 @@ def embedding(model: ParenTransformer, tokenizer: SimpleTokenizer, char: str) ->
 
 if MAIN:
     w5d5_tests.embedding_test(model, tokenizer, embedding)
+# %%
+if MAIN:
+    open_emb = embedding(model, tokenizer, "(")
+    closed_emb = embedding(model, tokenizer, ")")
+    pos_embeds = model.pos_encoder.pe
+    open_emb_ln_per_seqpos = model.layers[0].norm1(open_emb.to(DEVICE) + pos_embeds[1:41])
+    close_emb_ln_per_seqpos = model.layers[0].norm1(closed_emb.to(DEVICE) + pos_embeds[1:41])
+    attn_score_open_avg = qk_calc_termwise(
+        model, 
+        layer=0, 
+        head=0, 
+        q_embedding=open_emb_ln_per_seqpos, 
+        k_embedding=0.5 * (open_emb_ln_per_seqpos + close_emb_ln_per_seqpos),
+    )
+    attn_prob_open = attn_score_open_avg.softmax(-1).detach().clone().numpy()
+    px.imshow(
+        attn_prob_open, 
+        color_continuous_scale="RdBu_r", height=500, width=550,
+        labels={"x": "Key Position", "y": "Query Position", "color": "Attn prob"},
+        title="Predicted Attention Probabilities for '(' query", origin="lower"
+    ).update_layout(margin=dict(l=60, r=60, t=80, b=40)).show()
+# %%
+def avg_attn_probs_0_0(
+    model: ParenTransformer, data: DataSet, tokenizer: SimpleTokenizer, query_token: int
+) -> t.Tensor:
+    '''
+    Calculate the average attention probs for the 0.0 attention head for 
+    the provided data when the query is the given query token.
+    That is, q_embedding is given and k_embedding is empirical
+    We want to take the (b, s) pairs for which the query token is query_token.
+    For this, we need the (b, s, n, h) query embedding
+    Returns a tensor of shape (seq, seq)
+    '''
+    q_tensor = t.tensor(query_token)
+    attn_layer = model.layers[layer].self_attn
+    x = get_inputs(
+        model, data, attn_layer
+    ) # shape (batch, seq, hidden_size)
+    all_attn_probs = get_attn_probs(
+        model, tokenizer, data, layer=0, head=0
+    ) # shape [b, sQ, sK], need to subset sQ and then merge into batch dim
+    _, _, sK = all_attn_probs.shape
+    seq_q_mask = data.toks == query_token # shape [b, sQ]
+    seq_q_mask = repeat(seq_q_mask, 'b sQ -> b sQ sK', sK=sK)
+    masked_attn_probs = t.where(seq_q_mask, all_attn_probs, 0) # shape [b, s, s]
+    avg_probs = masked_attn_probs.mean(dim=0) # shape [s, s]
+    return avg_probs.detach()
+
+
+
+if MAIN:
+    data_len_40 = DataSet.with_length(data_tuples, 40)
+    for paren in ("(", ")"):
+        tok = tokenizer.t_to_i[paren]
+        attn_probs_mean = avg_attn_probs_0_0(model, data_len_40, tokenizer, tok).detach().clone()
+        px.imshow(
+            attn_probs_mean,
+            color_continuous_scale="RdBu", range_color=[0, 0.23], height=500, width=550,
+            labels={"x": "Key Position", "y": "Query Position", "color": "Attn prob"},
+            title=f"Attention patterns with query = {paren}", origin="lower"
+        ).update_layout(margin=dict(l=60, r=60, t=80, b=40)).show()
+# %%
+if MAIN:
+    tok = tokenizer.t_to_i["("]
+    attn_probs_mean = avg_attn_probs_0_0(model, data_len_40, tokenizer, tok).detach().clone()
+    px.bar(
+        attn_probs_mean[1], 
+        title=f"Attention pattern for first query position, query token = {paren!r}",
+        labels={"index": "Sequence position", "value": "Average attention"}, 
+        template="simple_white", 
+        height=500, 
+        width=600,
+    ).update_layout(showlegend=False, margin_l=100, yaxis_range=[0, 0.1], hovermode="x unified").show()
+# %%
+def embedding_OV_0_0(model, emb_in: t.Tensor) -> t.Tensor:
+    '''
+    Takes an embedding such as open_paren and returns the output of 
+    the 0.0 OV circuit when fed this embedding.
+    '''
+    attn = model.layers[0].self_attn
+    ov = attn.W_O(attn.W_V(emb_in))
+    ov = rearrange(
+        ov,
+        'b (n h) -> b n h',
+        n=attn.num_heads,
+    )
+    return ov[:, 0, :].squeeze()
+
+if MAIN:
+    '''
+    Fit the matrix L with the get_ln_fit function you wrote earlier.
+    Combine the function embedding_OV_0_0 with the embedding function you wrote earlier to 
+    calculate the vectors W_{OV}L(open_paren), W_{OV}L(close_paren).
+    Verify that these two vectors are approximately opposite in direction and 
+    equal in magnitude (for the former, you can use torch.cosine_similarity).
+    '''
+    norm1_ln_fit = get_ln_fit(model, data, model.layers[0].norm1, seq_pos=0)
+    open_emb = embedding(model, tokenizer, '(')
+    close_emb = embedding(model, tokenizer, ')')
+    open_out = embedding_OV_0_0(model, open_emb)
+    close_out = embedding_OV_0_0(model, close_emb)
+    similarity = t.cosine_similarity(open_out, close_out, dim=-1).detach().numpy()
+    ratio = (open_out.norm() / close_out.norm()).detach().numpy()
+    assert similarity < -0.9
+    assert .7 < ratio < 1.3
+    print(similarity, ratio)
 # %%
