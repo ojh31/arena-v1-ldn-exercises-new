@@ -753,4 +753,23 @@ if MAIN:
     assert similarity < -0.9
     assert .7 < ratio < 1.3
     print(similarity, ratio)
+#%% [markdown]
+#### Part 4: adversarial examples
+#%%
+# %%
+if MAIN:
+    # can leverage the red area of the attention grid for q~26, k~38
+    examples = [
+        "(((((((((((((((((((()))))))))))))))))))))", # balanced
+        "())(()()()()()()()()()()()()()()()()()()", # A=2, B=36 # false "balanced" label 60%
+        "((((((((((((((())))))))))))))))((((())))", # false balanced 99.986%, A=30, B=8
+        "()()()()()()()()()()()()()()())(()()()()", # A=30, B=8 in different style
+    ]
+    m = max(len(ex) for ex in examples)
+    toks = tokenizer.tokenize(examples).to(DEVICE)
+    out = model(toks)
+    print("\n".join([
+        f"{ex:{m}} -> {p:.4%} balanced confidence" 
+        for (ex, p) in zip(examples, out.exp()[:, 1])
+    ]))
 # %%
