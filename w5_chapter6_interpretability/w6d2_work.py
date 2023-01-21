@@ -198,4 +198,174 @@ fig = imshow(
 )
 fig.show(None)
 # %%
-# http://localhost:8501/W6D2_-_TransformerLens_&_induction_heads#hooks-accessing-activations
+batch_size = 10
+seq_len = 50
+random_tokens = t.randint(1000, 10000, (batch_size, seq_len)).to(model.cfg.device)
+repeated_tokens = repeat(random_tokens, "batch seq_len -> batch (2 seq_len)")
+repeated_logits = model(repeated_tokens)
+correct_log_probs = model.loss_fn(repeated_logits, repeated_tokens, per_token=True)
+loss_by_position = reduce(correct_log_probs, "batch position -> position", "mean")
+fig = line(
+    loss_by_position, xaxis="Position", yaxis="Loss", 
+    title="Loss by position on random repeated tokens"
+)
+#%%
+# We make a tensor to store the induction score for each head. 
+# We put it on the model's device to avoid needing to move things between the GPU and CPU, 
+# which can be slow.
+induction_score_store = t.zeros(
+    (model.cfg.n_layers, model.cfg.n_heads), 
+    device=model.cfg.device
+)
+def induction_score_hook(
+    pattern: TT["batch", "head_index", "dest_pos", "source_pos"],
+    hook: HookPoint,
+):
+    # We take the diagonal of attention paid from each destination position to 
+    # source positions seq_len-1 tokens back
+    # (This only has entries for tokens with index>=seq_len)
+    induction_stripe = pattern.diagonal(
+        dim1=-2, dim2=-1, offset=1-seq_len
+    ) # diagonal is dim2 == dim1 + offset
+    # Get an average score per head
+    induction_score = reduce(
+        induction_stripe, 
+        "batch head_index position -> head_index", 
+        "mean",
+    )
+    # Store the result.
+    induction_score_store[hook.layer(), :] = induction_score
+
+# We make a boolean filter on activation names, that's true only on attention pattern names.
+pattern_hook_names_filter = lambda name: name.endswith("pattern")
+
+model.run_with_hooks(
+    repeated_tokens, 
+    return_type=None, # For efficiency, we don't need to calculate the logits
+    fwd_hooks=[(
+        pattern_hook_names_filter,
+        induction_score_hook
+    )]
+)
+
+fig = imshow(
+    induction_score_store, xaxis="Head", yaxis="Layer", title="Induction Score by Head"
+)
+# %%
+induction_head_layer = 5
+induction_head_index = 5
+single_random_sequence = t.randint(1000, 10000, (1, 20)).to(model.cfg.device)
+repeated_random_sequence = repeat(
+    single_random_sequence, "batch seq_len -> batch (2 seq_len)"
+)
+def visualize_pattern_hook(
+    pattern: TT["batch", "head_index", "dest_pos", "source_pos"],
+    hook: HookPoint,
+):
+    display(
+        cv.attention.attention_heads(
+            tokens=model.to_str_tokens(repeated_random_sequence), 
+            attention=pattern[
+                0, induction_head_index, :, :
+            ][None, :, :] # Add a dummy axis, as CircuitsVis expects 3D patterns.
+        )
+    )
+
+model.run_with_hooks(
+    repeated_random_sequence, 
+    return_type=None, 
+    fwd_hooks=[(
+        utils.get_act_name("pattern", induction_head_layer), 
+        visualize_pattern_hook
+    )]
+)
+# %%
+distilgpt2 = HookedTransformer.from_pretrained("distilgpt2")
+# We make a tensor to store the induction score for each head. 
+# We put it on the model's device to avoid needing to move things between 
+# the GPU and CPU, which can be slow.
+distilgpt2_induction_score_store = t.zeros(
+    (distilgpt2.cfg.n_layers, distilgpt2.cfg.n_heads), 
+    device=distilgpt2.cfg.device
+)
+def induction_score_hook(
+    pattern: TT["batch", "head_index", "dest_pos", "source_pos"],
+    hook: HookPoint,
+):
+    # We take the diagonal of attention paid from each destination position to 
+    # source positions seq_len-1 tokens back
+    # (This only has entries for tokens with index>=seq_len)
+    induction_stripe = pattern.diagonal(dim1=-2, dim2=-1, offset=1-seq_len)
+    # Get an average score per head
+    induction_score = reduce(
+        induction_stripe, 
+        "batch head_index position -> head_index", 
+        "mean"
+    )
+    # Store the result.
+    distilgpt2_induction_score_store[hook.layer(), :] = induction_score
+
+# We make a boolean filter on activation names, that's true only on 
+# attention pattern names.
+pattern_hook_names_filter = lambda name: name.endswith("pattern")
+
+distilgpt2.run_with_hooks(
+    repeated_tokens, 
+    return_type=None, # For efficiency, we don't need to calculate the logits
+    fwd_hooks=[(
+        pattern_hook_names_filter,
+        induction_score_hook
+    )]
+)
+
+fig = imshow(
+    distilgpt2_induction_score_store, xaxis="Head", yaxis="Layer", 
+    title="Induction Score by Head in Distil GPT-2"
+)
+# %%
+for name, param in model.named_parameters():
+    if name.startswith("blocks.0."):
+        print(name, param.shape)
+# %%
+for name, param in model.named_parameters():
+    if not name.startswith("blocks"):
+        print(name, param.shape)
+# %%
+test_prompt = "The quick brown fox jumped over the lazy dog"
+print("Num tokens:", len(model.to_tokens(test_prompt)))
+
+def print_name_shape_hook_function(activation, hook):
+    print(hook.name, activation.shape)
+
+
+def not_in_late_block_filter(name: str):
+    return name.startswith("blocks.0.") or not name.startswith("blocks")
+
+model.run_with_hooks(
+    test_prompt,
+    return_type=None,
+    fwd_hooks=[(not_in_late_block_filter, print_name_shape_hook_function)],
+)
+# %%
+unembed_bias = model.unembed.b_U
+bias_values, bias_indices = unembed_bias.sort(descending=True)
+# %%
+top_k = 20
+print(f"Top {top_k} values")
+for i in range(top_k):
+    print(f"{bias_values[i].item():.2f} {repr(model.to_string(bias_indices[i]))}")
+
+print("...")
+print(f"Bottom {top_k} values")
+for i in range(top_k, 0, -1):
+    print(f"{bias_values[-i].item():.2f} {repr(model.to_string(bias_indices[-i]))}")
+# %%
+john_bias = model.unembed.b_U[model.to_single_token(' John')]
+mary_bias = model.unembed.b_U[model.to_single_token(' Mary')]
+
+print(f"John bias: {john_bias.item():.4f}")
+print(f"Mary bias: {mary_bias.item():.4f}")
+print(f"Prob ratio bias: {t.exp(john_bias - mary_bias).item():.4f}x")
+# %% [markdown]
+#### Part 2: TransformerLens Features
+# %%
