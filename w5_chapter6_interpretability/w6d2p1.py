@@ -77,9 +77,14 @@ print('device:', device)
 # %%
 model_description_text = '''## Loading Models
 
-HookedTransformer comes loaded with >40 open source GPT-style models. You can load any of them in with `HookedTransformer.from_pretrained(MODEL_NAME)`. See [model_details.md](TODO: link) for a description of all supported models. Each model is loaded into the consistent HookedTransformer architecture, designed to be clean, consistent and interpretability-friendly. 
+HookedTransformer comes loaded with >40 open source GPT-style models. 
+You can load any of them in with `HookedTransformer.from_pretrained(MODEL_NAME)`. 
+See [model_details.md](TODO: link) for a description of all supported models. 
+Each model is loaded into the consistent HookedTransformer architecture, 
+designed to be clean, consistent and interpretability-friendly. 
 
-For this demo notebook we'll look at GPT-2 Small, an 80M parameter model. To try the model the model out, let's find the loss on this paragraph!'''
+For this demo notebook we'll look at GPT-2 Small, an 80M parameter model. 
+To try the model the model out, let's find the loss on this paragraph!'''
 loss = model(model_description_text, return_type="loss")
 print("Model loss:", loss)
 # %%
@@ -366,6 +371,4 @@ mary_bias = model.unembed.b_U[model.to_single_token(' Mary')]
 print(f"John bias: {john_bias.item():.4f}")
 print(f"Mary bias: {mary_bias.item():.4f}")
 print(f"Prob ratio bias: {t.exp(john_bias - mary_bias).item():.4f}x")
-# %% [markdown]
-#### Part 2: TransformerLens Features
-# %%
+#%%
