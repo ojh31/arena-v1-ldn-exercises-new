@@ -277,3 +277,93 @@ if MAIN:
     print("Heads attending to previous token = ", ", ".join(prev_attn_detector(cache)))
     print("Heads attending to first token    = ", ", ".join(first_attn_detector(cache)))
 # %%
+def cross_entropy_loss(logits, tokens):
+    log_probs = F.log_softmax(logits, dim=-1)
+    pred_log_probs = t.gather(log_probs[:, :-1], -1, tokens[:, 1:, None])[..., 0]
+    return -pred_log_probs.mean()
+
+def head_ablation(
+    attn_result: TT["batch", "seq", "n_heads", "d_model"],
+    hook: HookPoint,
+    head_no: int
+) -> TT["batch", "seq", "n_heads", "d_model"]:
+    attn_result[:, :, head_no, :] = 0.
+    return attn_result
+
+def get_ablation_scores(
+    model: HookedTransformer, 
+    tokens: TT["batch", "seq"]
+) -> TT["n_layers", "n_heads"]:
+    '''
+    Returns a tensor of shape (n_layers, n_heads) containing the increase in 
+    cross entropy loss from ablating the output of each head.
+    '''
+    logits = model(tokens, return_type='logits')
+    base_loss = cross_entropy_loss(logits, tokens)
+    n_layers = model.cfg.n_layers
+    n_heads = model.cfg.n_heads
+    out = t.zeros((n_layers, n_heads))
+    for layer in range(n_layers):
+        for head in range(n_heads):
+            hook = partial(head_ablation, head_no=head)
+            ablated_logits = model.run_with_hooks(
+                tokens, 
+                fwd_hooks=[(
+                    utils.get_act_name("result", layer), 
+                    hook
+                )],
+                return_type='logits', 
+            )
+            ablated_loss = cross_entropy_loss(ablated_logits, tokens)
+            out[layer, head] = ablated_loss - base_loss
+    return out
+
+if MAIN:
+    ablation_scores = get_ablation_scores(model, tokens)
+    imshow(
+        ablation_scores, xaxis="Head", yaxis="Layer", caxis="logit diff", 
+        title="Logit Difference After Ablating Heads", text_auto=".2f"
+    )
+# %%
+def run_and_cache_model_repeated_tokens(
+    model: HookedTransformer, 
+    seq_len: int, 
+    batch=1
+) -> tuple[t.Tensor, t.Tensor, ActivationCache]:
+    '''
+    Generates a sequence of repeated random tokens, and runs the model on it, returning 
+    logits, tokens and cache
+
+    Add a prefix token, since the model was always trained to have one.
+
+    Outputs are:
+    rep_logits: [batch, 1+2*seq_len, d_vocab]
+    rep_tokens: [batch, 1+2*seq_len]
+    rep_cache: The cache of the model run on rep_tokens
+    '''
+    prefix = t.ones((batch, 1), dtype=t.int64) * tokenizer.bos_token_id
+    pass
+
+def per_token_losses(logits, tokens):
+    log_probs = F.log_softmax(logits, dim=-1)
+    pred_log_probs = t.gather(log_probs[:, :-1], -1, tokens[:, 1:, None])[..., 0]
+    return -pred_log_probs[0]
+
+if MAIN:
+    seq_len = 50
+    batch = 1
+    (rep_logits, rep_tokens, rep_cache) = run_and_cache_model_repeated_tokens(model, seq_len, batch)
+    rep_str = model.to_str_tokens(rep_tokens)
+    model.reset_hooks()
+    ptl = per_token_losses(rep_logits, rep_tokens)
+    print(f"Performance on the first half: {ptl[:seq_len].mean():.3f}")
+    print(f"Performance on the second half: {ptl[seq_len:].mean():.3f}")
+    fig = px.line(
+        to_numpy(ptl), hover_name=rep_str[1:],
+        title=f"Per token loss on sequence of length {seq_len} repeated twice",
+        labels={"index": "Sequence position", "value": "Loss"}
+    ).update_layout(showlegend=False, hovermode="x unified")
+    fig.add_vrect(x0=0, x1=49.5, fillcolor="red", opacity=0.2, line_width=0)
+    fig.add_vrect(x0=49.5, x1=99, fillcolor="green", opacity=0.2, line_width=0)
+    fig.show()
+# %%
