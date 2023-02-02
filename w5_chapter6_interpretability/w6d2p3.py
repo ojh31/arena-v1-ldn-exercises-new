@@ -328,7 +328,7 @@ if MAIN:
 def run_and_cache_model_repeated_tokens(
     model: HookedTransformer, 
     seq_len: int, 
-    batch=1
+    batch: int = 1,
 ) -> tuple[t.Tensor, t.Tensor, ActivationCache]:
     '''
     Generates a sequence of repeated random tokens, and runs the model on it, returning 
@@ -341,8 +341,11 @@ def run_and_cache_model_repeated_tokens(
     rep_tokens: [batch, 1+2*seq_len]
     rep_cache: The cache of the model run on rep_tokens
     '''
-    prefix = t.ones((batch, 1), dtype=t.int64) * tokenizer.bos_token_id
-    pass
+    prefix = t.ones((batch, 1), dtype=t.int64, device=device) * tokenizer.bos_token_id
+    noise = t.randint(low=0, high=model.cfg.d_vocab, size=(batch, seq_len, ), device=device)
+    rep_tokens = t.cat((prefix, noise, noise), dim=-1)
+    rep_logits, rep_cache = model.run_with_cache(rep_tokens)
+    return rep_logits, rep_tokens, rep_cache
 
 def per_token_losses(logits, tokens):
     log_probs = F.log_softmax(logits, dim=-1)
@@ -352,7 +355,9 @@ def per_token_losses(logits, tokens):
 if MAIN:
     seq_len = 50
     batch = 1
-    (rep_logits, rep_tokens, rep_cache) = run_and_cache_model_repeated_tokens(model, seq_len, batch)
+    (rep_logits, rep_tokens, rep_cache) = run_and_cache_model_repeated_tokens(
+        model, seq_len, batch
+    )
     rep_str = model.to_str_tokens(rep_tokens)
     model.reset_hooks()
     ptl = per_token_losses(rep_logits, rep_tokens)
@@ -366,4 +371,29 @@ if MAIN:
     fig.add_vrect(x0=0, x1=49.5, fillcolor="red", opacity=0.2, line_width=0)
     fig.add_vrect(x0=49.5, x1=99, fillcolor="green", opacity=0.2, line_width=0)
     fig.show()
+# %%
+def induction_attn_detector(cache: ActivationCache) -> List[str]:
+    '''
+    Returns a list e.g. ["0.2", "1.4", "1.9"] of "layer.head" which you judge to be 
+    induction heads
+
+    Remember:
+        The tokens used to generate rep_cache are (bos_token, *rand_tokens, *rand_tokens)
+    '''
+    _, out_len, _ = cache['blocks.0.hook_resid_post'].shape
+    seq_len = out_len // 2
+    heads = []
+    for act_name, act_value in cache.items():
+        if 'pattern' not in act_name:
+            continue
+        # act_value shape [n, s, s]
+        layer = act_name.split('.')[1] # e.g. blocks.1.attn...
+        for head, pattern in enumerate(act_value[0]):
+            previous = t.diag(pattern, diagonal=-(seq_len - 1))
+            if previous.sum() > pattern.sum() * TOL:
+                heads.append(f'{layer}.{head:d}')
+    return heads
+
+if MAIN:
+    print("Induction heads = ", ", ".join(induction_attn_detector(rep_cache)))
 # %%
