@@ -191,3 +191,89 @@ if MAIN:
         )
         t.testing.assert_close(logit_attr.sum(1), correct_token_logits, atol=1e-2, rtol=0)
 # %%
+def plot_logit_attribution(logit_attr: TT["seq", "path"], tokens: TT["seq"]):
+    tokens = tokens.squeeze()
+    y_labels = convert_tokens_to_string(tokens[:-1])
+    x_labels = ["Direct"] + [
+        f"L{l}H{h}" for l in range(model.cfg.n_layers) for h in range(model.cfg.n_heads)
+    ]
+    imshow(
+        to_numpy(logit_attr), x=x_labels, y=y_labels, xaxis="Term", yaxis="Position", 
+        caxis="logit", height=25*len(tokens)
+    )
+
+if MAIN:
+    embed = cache["hook_embed"]
+    l1_results = cache["blocks.0.attn.hook_result"]
+    l2_results = cache["blocks.1.attn.hook_result"]
+    logit_attr = logit_attribution(
+        embed, l1_results, l2_results, model.unembed.W_U, tokens[0]
+    )
+    plot_logit_attribution(logit_attr, tokens)
+# %%
+if MAIN:
+    for layer in range(model.cfg.n_layers):
+        attention_pattern = cache["pattern", layer]
+        html = cv.attention.attention_heads(tokens=str_tokens, attention=attention_pattern)
+        display(html)
+# %%
+TOL = 0.3
+def current_attn_detector(cache: ActivationCache) -> List[str]:
+    '''
+    Returns a list e.g. ["0.2", "1.4", "1.9"] of "layer.head" which you judge to be 
+    current-token heads
+    '''
+    heads = []
+    for act_name, act_value in cache.items():
+        if 'pattern' not in act_name:
+            continue
+        # act_value shape [n, s, s]
+        layer = act_name.split('.')[1] # e.g. blocks.1.attn...
+        for head, pattern in enumerate(act_value):
+            currents = t.diag(pattern)
+            # print(currents.sum().item() / pattern.sum().item())
+            if currents.sum() > pattern.sum() * TOL:
+                heads.append(f'{layer}.{head:d}')
+    return heads
+
+
+def prev_attn_detector(cache: ActivationCache):
+    '''
+    Returns a list e.g. ["0.2", "1.4", "1.9"] of "layer.head" which you judge to be 
+    prev-token heads
+    '''
+    heads = []
+    for act_name, act_value in cache.items():
+        if 'pattern' not in act_name:
+            continue
+        # act_value shape [n, s, s]
+        layer = act_name.split('.')[1] # e.g. blocks.1.attn...
+        for head, pattern in enumerate(act_value):
+            previous = t.diag(pattern, diagonal=-1)
+            if previous.sum() > pattern.sum() * TOL:
+                heads.append(f'{layer}.{head:d}')
+    return heads
+
+def first_attn_detector(cache: ActivationCache):
+    '''
+    Returns a list e.g. ["0.2", "1.4", "1.9"] of "layer.head" which you judge to be 
+    first-token heads
+    '''
+    heads = []
+    for act_name, act_value in cache.items():
+        if 'pattern' not in act_name:
+            continue
+        # act_value shape [n, s, s]
+        layer = act_name.split('.')[1] # e.g. blocks.1.attn...
+        for head, pattern in enumerate(act_value):
+            first = pattern[:, 0]
+            if first.sum() > pattern.sum() * TOL:
+                heads.append(f'{layer}.{head:d}')
+    return heads
+
+if MAIN:
+
+    print("Heads attending to current token  = ", ", ".join(current_attn_detector(cache)))
+    print("Heads attending to previous token = ", ", ".join(prev_attn_detector(cache)))
+    print("Heads attending to first token    = ", ", ".join(first_attn_detector(cache)))
+# %%
