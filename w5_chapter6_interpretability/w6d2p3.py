@@ -127,12 +127,12 @@ patch_typeguard()  # must call this before @typechecked
 
 @typechecked
 def logit_attribution(
-    embed: TT["seq_len": seq_len, "d_model"],
+    embed: TT["seq_len", "d_model"],
     l1_results: TT["seq_len", "n_heads", "d_model"],
     l2_results: TT["seq_len", "n_heads", "d_model"],
     W_U: TT["d_model", "d_vocab"],
     tokens: TT["seq_len"],
-) -> TT[seq_len-1, "n_components": n_components]:
+) -> TT["seq_len_minus1", "n_components": n_components]:
     '''
     We have provided 'W_U_to_logits' which is a (d_model, seq_next) tensor where 
     each row is the unembed for the correct NEXT token at the current position.
@@ -396,4 +396,30 @@ def induction_attn_detector(cache: ActivationCache) -> List[str]:
 
 if MAIN:
     print("Induction heads = ", ", ".join(induction_attn_detector(rep_cache)))
+# %%
+if MAIN:
+    batch, full_len, d_model = embed.shape
+    assert batch == 1
+    seq_len = full_len // 2
+    embed = rep_cache["hook_embed"]
+    l1_results = rep_cache["blocks.0.attn.hook_result"]
+    l2_results = rep_cache["blocks.1.attn.hook_result"]
+    first_half_tokens = rep_tokens[0, : 1 + seq_len]
+    second_half_tokens = rep_tokens[0, seq_len:]
+    first_half_logit_attr = logit_attribution(
+        embed[0, :seq_len + 1, :], 
+        l1_results[0, :seq_len + 1, :, :], 
+        l2_results[0, :seq_len + 1, :, :], 
+        model.unembed.W_U, 
+        first_half_tokens
+    )
+    second_half_logit_attr = logit_attribution(
+        embed[0, seq_len:, :], 
+        l1_results[0, seq_len:, :, :], 
+        l2_results[0, seq_len:, :, :], 
+        model.unembed.W_U, 
+        second_half_tokens,
+    )
+    plot_logit_attribution(first_half_logit_attr, first_half_tokens)
+    plot_logit_attribution(second_half_logit_attr, second_half_tokens)
 # %%
