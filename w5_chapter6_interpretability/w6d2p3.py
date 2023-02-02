@@ -423,3 +423,9 @@ if MAIN:
     plot_logit_attribution(first_half_logit_attr, first_half_tokens)
     plot_logit_attribution(second_half_logit_attr, second_half_tokens)
 # %%
+if MAIN:
+    ablation_scores = get_ablation_scores(model, rep_tokens)
+    imshow(
+        ablation_scores, xaxis="Head", yaxis="Layer", caxis="logit diff", title="Logit Difference After Ablating Heads (detecting induction heads)", text_auto=".2f"
+    )
+# %%
