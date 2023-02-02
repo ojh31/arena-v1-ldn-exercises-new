@@ -94,3 +94,100 @@ cfg = HookedTransformerConfig(
     positional_embedding_type="shortformer" # this makes it so positional embeddings are used differently (makes induction heads cleaner to study)
 )
 # %%
+WEIGHT_PATH = "./data/attn_only_2L_half.pth"
+
+if MAIN:
+    model = HookedTransformer(cfg)
+    raw_weights = model.state_dict()
+    pretrained_weights = t.load(WEIGHT_PATH, map_location=device)
+    model.load_state_dict(pretrained_weights)
+    tokenizer = model.tokenizer
+# %%
+if MAIN:
+    text = "We think that powerful, significantly superhuman machine intelligence is more likely than not to be created this century. If current machine learning techniques were scaled up to this level, we think they would by default produce systems that are deceptive or manipulative, and that no solid plans are known for how to avoid this."
+    str_tokens = model.to_str_tokens(text)
+    tokens = model.to_tokens(text)
+    tokens = tokens.to(device)
+    logits, cache = model.run_with_cache(tokens, remove_batch_dim=True)
+    model.reset_hooks()
+#%%
+def to_numpy(tensor):
+    '''Helper function to convert things to numpy before plotting with Plotly.'''
+    return tensor.detach().cpu().numpy()
+
+def convert_tokens_to_string(tokens, batch_index=0):
+    if len(tokens.shape) == 2:
+        tokens = tokens[batch_index]
+    return [f"|{tokenizer.decode(tok)}|_{c}" for (c, tok) in enumerate(tokens)]
+
+seq_len = tokens.shape[-1]
+n_components = model.cfg.n_layers * model.cfg.n_heads + 1
+
+patch_typeguard()  # must call this before @typechecked
+
+@typechecked
+def logit_attribution(
+    embed: TT["seq_len": seq_len, "d_model"],
+    l1_results: TT["seq_len", "n_heads", "d_model"],
+    l2_results: TT["seq_len", "n_heads", "d_model"],
+    W_U: TT["d_model", "d_vocab"],
+    tokens: TT["seq_len"],
+) -> TT[seq_len-1, "n_components": n_components]:
+    '''
+    We have provided 'W_U_to_logits' which is a (d_model, seq_next) tensor where 
+    each row is the unembed for the correct NEXT token at the current position.
+
+    N.B. when searching for the correct next token we ignore
+        * the first position token label
+        * the model output at the last position.
+
+    Inputs:
+        embed: 
+            the embeddings of the tokens (i.e. token + position embeddings)
+            shape [s, nh]
+        l1_results: 
+            the outputs of the attention heads at layer 1 (with head as one of the dimensions)
+            shape [s, n, nh]
+        l2_results: 
+            the outputs of the attention heads at layer 2 (with head as one of the dimensions)
+            shape [s, n, nh]
+        W_U: the unembedding matrix
+            shape [nh, v]
+        tokens:
+            shape [s]
+    Returns:
+        Tensor representing the concatenation (along dim=-1) of logit attributions from:
+            the direct path (position-1,1)
+            layer 0 logits (position-1, n_heads)
+            and layer 1 logits (position-1, n_heads)
+        shape [s-1, 2n + 1]
+    '''
+    W_U_to_logits = W_U[:, tokens[1:]] # shape [nh, s-1]
+    direct_path = einsum(
+        'dModel sN, sN dModel -> sN', W_U_to_logits, embed[:-1, :]
+    ) # shape [s-1]
+    direct_path = repeat(direct_path, 's -> s n', n=1)
+    l1_path = einsum(
+        'dModel sN, sN n dModel -> sN n', W_U_to_logits, l1_results[:-1, :, :]
+    )
+    l2_path = einsum(
+        'dModel sN, sN n dModel -> sN n', W_U_to_logits, l2_results[:-1, :, :]
+    )
+    return t.cat((direct_path, l1_path, l2_path), dim=-1)
+# %%
+if MAIN:
+    with t.inference_mode():
+        batch_index = 0
+        embed = cache["hook_embed"]
+        l1_results = cache["result", 0] # same as cache["blocks.0.attn.hook_result"]
+        l2_results = cache["result", 1]
+        logit_attr = logit_attribution(
+            embed, l1_results, l2_results, model.unembed.W_U, tokens[0]
+        )
+        # Uses fancy indexing to get a len(tokens[0])-1 length tensor, where 
+        # the kth entry is the predicted logit for the correct k+1th token
+        correct_token_logits = (
+            logits[batch_index, t.arange(len(tokens[0]) - 1), tokens[batch_index, 1:]]
+        )
+        t.testing.assert_close(logit_attr.sum(1), correct_token_logits, atol=1e-2, rtol=0)
+# %%
