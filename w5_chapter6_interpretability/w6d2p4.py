@@ -250,3 +250,42 @@ if MAIN:
     )
 
 #%%
+def decompose_attn_scores(decomposed_q: t.Tensor, decomposed_k: t.Tensor) -> t.Tensor:
+    '''
+    decomposed_q: shape [2+num_heads, position, d_head] 
+    decomposed_k: shape [2+num_heads, position, d_head] 
+
+    return: shape [query_component, key_component, query_pos, key_pos]
+
+    '''
+    return einsum(
+        "hQ seqQ headsize, hK seqK headsize -> "
+        "hQ hK seqQ seqK", 
+        decomposed_q, 
+        decomposed_k
+    ) / (decomposed_q.shape[-1] ** 0.5)
+
+
+if MAIN:
+    decomposed_scores = decompose_attn_scores(decomposed_q, decomposed_k)
+    decomposed_stds = reduce(
+        decomposed_scores, 
+        "query_decomp key_decomp query_pos key_pos -> query_decomp key_decomp", 
+        t.std,
+    )
+    # First plot: attention score contribution from 
+    # (query_component, key_component) = (Embed, L0H7)
+    imshow(
+        to_numpy(t.tril(decomposed_scores[0, 9])), 
+        title="Attention Scores for component from Q=Embed and K=Prev Token Head"
+    )
+    # Second plot: std dev over query and key positions, shown by component
+    imshow(
+        to_numpy(decomposed_stds), 
+        xaxis="Key Component", 
+        yaxis="Query Component", 
+        title="Standard deviations of components of scores", 
+        x=component_labels, 
+        y=component_labels
+    )
+# %%
