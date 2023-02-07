@@ -31,6 +31,7 @@ import transformer_lens.utils as utils
 from transformer_lens.hook_points import HookedRootModule, HookPoint  # Hooking utilities
 from transformer_lens import HookedTransformer, HookedTransformerConfig, FactoredMatrix, ActivationCache
 
+from w6d2p3 import run_and_cache_model_repeated_tokens
 # Saves computation time, since we don't need it for the contents of this notebook
 t.set_grad_enabled(False)
 
@@ -167,3 +168,85 @@ if MAIN:
 
     imshow(to_numpy(pos_by_pos_pattern[:200, :200]), xaxis="Key", yaxis="Query")
 # %%
+def decompose_qk_input(cache: dict) -> t.Tensor:
+    '''
+    Output is decomposed_qk_input, with shape [2+num_heads, position, d_model]
+    '''
+    heads = rearrange(cache["result", 0], 'b s h d -> b h s d').squeeze(0)
+    decomposed_qk_input = t.cat(
+        (cache['embed'], cache["pos_embed"], heads),
+    ).to(device=device)
+    return decomposed_qk_input
+
+
+def decompose_q(decomposed_qk_input: t.Tensor, ind_head_index: int) -> t.Tensor:
+    '''
+    Output is decomposed_q with shape [2+num_heads, position, d_head] 
+    such that sum along axis 0 is just q
+    '''
+    wQ = model.blocks[1].attn.W_Q[ind_head_index]
+    return einsum(
+        'd_model d_head, h s d_model -> h s d_head', 
+        wQ, 
+        decomposed_qk_input,
+    )
+
+
+def decompose_k(decomposed_qk_input: t.Tensor, ind_head_index: int) -> t.Tensor:
+    '''
+    Output is decomposed_k with shape [2+num_heads, position, d_head] 
+    such that sum along axis 0 is just k
+    exactly analogous as for q
+    '''
+    wK = model.blocks[1].attn.W_K[ind_head_index]
+    return einsum(
+        'd_model d_head, h s d_model -> h s d_head', 
+        wK, 
+        decomposed_qk_input,
+    )
+
+
+if MAIN:
+    seq_len = 50
+    batch = 1
+    (rep_logits, rep_tokens, rep_cache) = run_and_cache_model_repeated_tokens(
+        model, seq_len, batch, device=device,
+    )
+
+    ind_head_index = 4
+    decomposed_qk_input = decompose_qk_input(rep_cache)
+    t.testing.assert_close(
+        decomposed_qk_input.sum(0), 
+        (rep_cache["resid_pre", 1][0] + rep_cache["pos_embed"][0]).to(device=device), 
+        rtol=0.01, 
+        atol=1e-05
+    )
+    decomposed_q = decompose_q(decomposed_qk_input, ind_head_index)
+    t.testing.assert_close(
+        decomposed_q.sum(0), 
+        rep_cache["blocks.1.attn.hook_q"][0, :, ind_head_index].to(device=device), 
+        rtol=0.01, 
+        atol=0.001
+    )
+    decomposed_k = decompose_k(decomposed_qk_input, ind_head_index)
+    t.testing.assert_close(
+        decomposed_k.sum(0), 
+        rep_cache["blocks.1.attn.hook_k"][0, :, ind_head_index].to(device=device), 
+        rtol=0.01, 
+        atol=0.01
+    )
+    component_labels = ["Embed", "PosEmbed"] + [f"L0H{h}" for h in range(model.cfg.n_heads)]
+    imshow(
+        to_numpy(decomposed_q.pow(2).sum([-1])), 
+        xaxis="Pos", 
+        yaxis="Component", 
+        title="Norms of components of query"
+    )
+    imshow(
+        to_numpy(decomposed_k.pow(2).sum([-1])),
+        xaxis="Pos", 
+        yaxis="Component", 
+        title="Norms of components of key"
+    )
+
+#%%

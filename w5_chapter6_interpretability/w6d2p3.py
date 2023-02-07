@@ -120,8 +120,8 @@ def convert_tokens_to_string(tokens, batch_index=0):
         tokens = tokens[batch_index]
     return [f"|{tokenizer.decode(tok)}|_{c}" for (c, tok) in enumerate(tokens)]
 
-seq_len = tokens.shape[-1]
-n_components = model.cfg.n_layers * model.cfg.n_heads + 1
+# seq_len = tokens.shape[-1]
+# n_components = model.cfg.n_layers * model.cfg.n_heads + 1
 
 patch_typeguard()  # must call this before @typechecked
 
@@ -132,7 +132,7 @@ def logit_attribution(
     l2_results: TT["seq_len", "n_heads", "d_model"],
     W_U: TT["d_model", "d_vocab"],
     tokens: TT["seq_len"],
-) -> TT["seq_len_minus1", "n_components": n_components]:
+) -> TT["seq_len_minus1", "n_components"]:
     '''
     We have provided 'W_U_to_logits' which is a (d_model, seq_next) tensor where 
     each row is the unembed for the correct NEXT token at the current position.
@@ -329,6 +329,7 @@ def run_and_cache_model_repeated_tokens(
     model: HookedTransformer, 
     seq_len: int, 
     batch: int = 1,
+    device: str = None,
 ) -> tuple[t.Tensor, t.Tensor, ActivationCache]:
     '''
     Generates a sequence of repeated random tokens, and runs the model on it, returning 
@@ -341,7 +342,7 @@ def run_and_cache_model_repeated_tokens(
     rep_tokens: [batch, 1+2*seq_len]
     rep_cache: The cache of the model run on rep_tokens
     '''
-    prefix = t.ones((batch, 1), dtype=t.int64, device=device) * tokenizer.bos_token_id
+    prefix = t.ones((batch, 1), dtype=t.int64, device=device) * model.tokenizer.bos_token_id
     noise = t.randint(low=0, high=model.cfg.d_vocab, size=(batch, seq_len, ), device=device)
     rep_tokens = t.cat((prefix, noise, noise), dim=-1)
     rep_logits, rep_cache = model.run_with_cache(rep_tokens)
@@ -356,7 +357,7 @@ if MAIN:
     seq_len = 50
     batch = 1
     (rep_logits, rep_tokens, rep_cache) = run_and_cache_model_repeated_tokens(
-        model, seq_len, batch
+        model, seq_len, batch, device=device,
     )
     rep_str = model.to_str_tokens(rep_tokens)
     model.reset_hooks()
