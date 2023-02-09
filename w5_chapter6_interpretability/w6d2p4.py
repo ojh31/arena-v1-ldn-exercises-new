@@ -24,6 +24,8 @@ import itertools
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 import dataclasses
 import datasets
+import sys
+import time
 from IPython.display import HTML, display
 
 import transformer_lens
@@ -94,17 +96,32 @@ if MAIN:
     pretrained_weights = t.load(WEIGHT_PATH, map_location=device)
     model.load_state_dict(pretrained_weights)
     tokenizer = model.tokenizer
+
 #%%
-if MAIN:
+def get_ov_circuit_full():
     head_index = 4
     layer = 1
-    wU = model.unembed.W_U
-    wO = model.blocks[layer].attn.W_O[head_index]
-    wV = model.blocks[layer].attn.W_V[head_index]
-    wE = model.embed.W_E
+    wU = model.unembed.W_U#.half()
+    wO = model.blocks[layer].attn.W_O[head_index]#.half()
+    wV = model.blocks[layer].attn.W_V[head_index]#.half()
+    wE = model.embed.W_E#.half()
+    t0 = time.time()
     OV_circuit_full = (
         wE @ wV @ wO @ wU
-    ) # replace with the matrix calculation W_U W_O W_V W_E
+    )  # 7.98s
+    # OV_circuit_full = einsum(
+    #     'dm v1, dh dm, dm dh, v2 dm -> v1 v2',
+    #     wU, 
+    #     wO, 
+    #     wV, 
+    #     wE,
+    # ) # 9.74s
+    print(f'multiplication time = {time.time() - t0:.2f}s')
+    return OV_circuit_full
+#%%
+if MAIN:
+    OV_circuit_full = get_ov_circuit_full()
+    
     
 # %%
 def to_numpy(tensor):
@@ -127,14 +144,10 @@ def top_1_acc(OV_circuit_full):
 if MAIN:
     print("Fraction of the time that the best logit is on the diagonal:")
     print(top_1_acc(OV_circuit_full))
-# %%
-if MAIN:
-    try:
-        del OV_circuit_full
-    except:
-        pass
-    "YOUR CODE HERE, DEFINE OV_circuit_full_both"
-    wO = model.blocks[layer].attn.W_O[head_index]
+#%%
+def get_ov_circuit_full_both():
+    wE = model.embed.W_E
+    wU = model.unembed.W_U
     OV_circuit_full_both = (
         wE @ 
         (
@@ -143,6 +156,15 @@ if MAIN:
         ) @ 
         wU
     )
+    return OV_circuit_full_both
+# %%
+if MAIN:
+    try:
+        del OV_circuit_full
+    except:
+        pass
+    "YOUR CODE HERE, DEFINE OV_circuit_full_both"
+    OV_circuit_full_both = get_ov_circuit_full_both()
     print("Top 1 accuracy for the full OV Circuit:", top_1_acc(OV_circuit_full_both))
     try:
         del OV_circuit_full_both
@@ -158,15 +180,19 @@ def mask_scores(
     masked_attn_scores = t.where(mask, attn_scores, neg_inf)
     return masked_attn_scores
 
-if MAIN:
-    wP = model.pos_embed.W_pos
-    wQ = model.blocks[0].attn.W_Q[7]
-    wK = model.blocks[0].attn.W_K[7]
+def get_pos_by_pos_pattern():
+    wP = model.pos_embed.W_pos#.half()
+    wQ = model.blocks[0].attn.W_Q[7]#.half()
+    wK = model.blocks[0].attn.W_K[7]#.half()
     pos_by_pos_pattern = mask_scores(
         wP @ wQ @ wK.T @ wP.T / (cfg.d_head ** 0.5)
     ).softmax(-1)
+    return pos_by_pos_pattern
 
+if MAIN:
+    pos_by_pos_pattern = get_pos_by_pos_pattern()
     imshow(to_numpy(pos_by_pos_pattern[:200, :200]), xaxis="Key", yaxis="Query")
+    del pos_by_pos_pattern
 # %%
 def decompose_qk_input(cache: dict) -> t.Tensor:
     '''
@@ -184,7 +210,7 @@ def decompose_q(decomposed_qk_input: t.Tensor, ind_head_index: int) -> t.Tensor:
     Output is decomposed_q with shape [2+num_heads, position, d_head] 
     such that sum along axis 0 is just q
     '''
-    wQ = model.blocks[1].attn.W_Q[ind_head_index]
+    wQ = model.blocks[1].attn.W_Q[ind_head_index]#.half()
     return einsum(
         'd_model d_head, h s d_model -> h s d_head', 
         wQ, 
@@ -198,7 +224,7 @@ def decompose_k(decomposed_qk_input: t.Tensor, ind_head_index: int) -> t.Tensor:
     such that sum along axis 0 is just k
     exactly analogous as for q
     '''
-    wK = model.blocks[1].attn.W_K[ind_head_index]
+    wK = model.blocks[1].attn.W_K[ind_head_index]#.half()
     return einsum(
         'd_model d_head, h s d_model -> h s d_head', 
         wK, 
@@ -212,6 +238,7 @@ if MAIN:
     (rep_logits, rep_tokens, rep_cache) = run_and_cache_model_repeated_tokens(
         model, seq_len, batch, device=device,
     )
+    del rep_logits, rep_tokens
 
     ind_head_index = 4
     decomposed_qk_input = decompose_qk_input(rep_cache)
@@ -248,6 +275,7 @@ if MAIN:
         yaxis="Component", 
         title="Norms of components of key"
     )
+    del decomposed_qk_input
 
 #%%
 def decompose_attn_scores(decomposed_q: t.Tensor, decomposed_k: t.Tensor) -> t.Tensor:
@@ -288,4 +316,42 @@ if MAIN:
         x=component_labels, 
         y=component_labels
     )
+    del decomposed_q, decomposed_k, decomposed_scores, decomposed_stds
+#%%
+var_snap = list(vars().items())
+for name, val in var_snap:
+    if isinstance(val, t.Tensor):
+        print(name, val.shape)
 # %%
+def find_K_comp_full_circuit(prev_token_head_index, ind_head_index):
+    '''
+    prev_token_head_index: 7
+    ind_head_index: 4
+
+    Returns a vocab x vocab matrix
+    first dimension being the query side
+    second dimension being the key side (going via the previous token head)
+    '''
+    wQ = model.blocks[1].attn.W_Q[ind_head_index]#.half()
+    wK = model.blocks[1].attn.W_K[ind_head_index]#.half()
+    wO = model.blocks[0].attn.W_O[prev_token_head_index]#.half()
+    wV = model.blocks[0].attn.W_V[prev_token_head_index]#.half()
+    wE = model.embed.W_E.half()
+    K_comp_circuit_full = (
+        wE @ wQ @ wK.T @ wO.T @ wV.T @ wE.T
+    ) # E Q K O V E
+    return K_comp_circuit_full
+
+
+if MAIN:
+    prev_token_head_index = 7
+    # K_comp_circuit = find_K_comp_full_circuit(
+    #     prev_token_head_index, ind_head_index
+    # )
+    # print(
+    #     "Fraction of tokens where the highest activating key is the same token", 
+    #     top_1_acc(K_comp_circuit.T).item()
+    # )
+    # del K_comp_circuit
+# %%
+# http://localhost:8501/W6D2_-_TransformerLens_&_induction_heads#further-exploration-of-induction-circuits
