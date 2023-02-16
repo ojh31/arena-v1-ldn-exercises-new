@@ -10,10 +10,12 @@ import sys
 from einops import rearrange
 import torchvision
 import time
-from typing import Callable
+from typing import Callable, Dict
 from tqdm import tqdm
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+import os
+import wandb
 
 sys.path.append('/home/oskar/projects/arena-v1-ldn-exercises-new')
 
@@ -248,7 +250,6 @@ class ConvNet(nn.Module):
         x = self.fc2(x)
         return x
 #%%
-MODEL_FILENAME = "./w7d3_robust_mnist.pt"
 loss_fn = nn.CrossEntropyLoss()
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 convnet_config = dict(
@@ -261,11 +262,12 @@ convnet_config = dict(
 )
 #%%
 def train_convnet(
-    config,
+    config: Dict = None,
 ) -> ConvNet:
     '''
     Defines a ConvNet using our previous code, and trains it on the data in trainloader.
     '''
+    wandb.init(project='w7d3_robust_mnist', config=config)
     batch_size = config['batch_size']
     epochs = config['epochs']
     trainloader = DataLoader(
@@ -279,6 +281,8 @@ def train_convnet(
     for epoch in range(epochs):
 
         progress_bar = tqdm(trainloader)
+        epoch_ce_loss = 0
+        epoch_adv_loss = 0
         for (x, y) in progress_bar:
 
             x = x.to(device)
@@ -307,17 +311,25 @@ def train_convnet(
             optimizer.zero_grad()
 
             loss_list.append(loss.item())
+            epoch_ce_loss += ce_loss.item()
+            epoch_adv_loss += adv_loss.item()
 
             progress_bar.set_description(
                 f"Epoch = {epoch}, CE Loss = {ce_loss.item():.4f}, "
                 f"ADV Loss = {adv_loss.item():.4f}"
             )
+        wandb.log({
+            'ce_loss': epoch_ce_loss, 
+            'adv_loss': epoch_adv_loss, 
+            'total_loss': epoch_adv_loss + epoch_ce_loss,
+        })
 
-    print(f"Saving model to: {MODEL_FILENAME}")
-    torch.save(model, MODEL_FILENAME)
+    model_path = os.path.join(wandb.run.dir, "model.h5")
+    print(f"Saving model to: {model_path}")
+    wandb.save(model_path)
+    wandb.finish()
     return model
 #%%
-# FIXME: add wandb
 # FIXME: add validation adv attack examples
 convnet_model = train_convnet(convnet_config)
 #%%
