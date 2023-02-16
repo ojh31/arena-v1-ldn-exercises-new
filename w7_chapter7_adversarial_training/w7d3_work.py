@@ -22,7 +22,7 @@ sys.path.append('/home/oskar/projects/arena-v1-ldn-exercises-new')
 from w7_chapter7_adversarial_training import w7d3_utils, w7d3_tests
 # %%
 def untargeted_FGSM(
-    x_batch, true_labels, network, normalize, eps=8/255., **kwargs
+    x_batch, true_labels, network, normalize, eps=8/255., step_size=None, num_steps=None, **kwargs
 ):
     '''
     Generates a batch of untargeted FGSM adversarial examples
@@ -90,7 +90,10 @@ def tensor_clamp_l2(x_batch, center, radius):
     clamp = center + normalize_l2(x_batch - center) * radius
     return x_batch.where(from_center <= radius, clamp)
 
-def PGD_l2(x_batch, true_labels, network, normalize, num_steps=20, step_size=3./255, eps=128/255., **kwargs):
+def PGD_l2(
+        x_batch, true_labels, network, normalize, num_steps=20, step_size=3./255, eps=128/255., 
+        **kwargs
+    ):
         '''
         Returns perturbed batch of images
         '''
@@ -250,15 +253,16 @@ class ConvNet(nn.Module):
         x = self.fc2(x)
         return x
 #%%
-loss_fn = nn.CrossEntropyLoss()
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 convnet_config = dict(
-    epochs = 3,
+    epochs = 1,
     batch_size = 128,
     lambda_adv = 1.0,
-    epsilon = 8/255., 
+    epsilon = 0.3, 
     num_steps = 10, 
     step_size = 0.01,
+    attacker = untargeted_FGSM,
+    log_image_freq = 50,
 )
 #%%
 def train_convnet(
@@ -270,20 +274,19 @@ def train_convnet(
     wandb.init(project='w7d3_robust_mnist', config=config)
     batch_size = config['batch_size']
     epochs = config['epochs']
+    attacker = config['attacker']
     trainloader = DataLoader(
         trainset, batch_size=batch_size, shuffle=True,
         generator=torch.Generator(device=device),
         )
     model = ConvNet().to(device).train()
     optimizer = torch.optim.Adam(model.parameters())
+    loss_fn = nn.CrossEntropyLoss()
     loss_list = []
-
     for epoch in range(epochs):
 
         progress_bar = tqdm(trainloader)
-        epoch_ce_loss = 0
-        epoch_adv_loss = 0
-        for (x, y) in progress_bar:
+        for i, (x, y) in enumerate(progress_bar):
 
             x = x.to(device)
             y = y.to(device)
@@ -291,7 +294,7 @@ def train_convnet(
 
             y_hat = model(x_norm)
 
-            x_adv = untargeted_PGD(
+            x_adv = attacker(
                 x,
                 y,
                 model,
@@ -311,25 +314,102 @@ def train_convnet(
             optimizer.zero_grad()
 
             loss_list.append(loss.item())
-            epoch_ce_loss += ce_loss.item()
-            epoch_adv_loss += adv_loss.item()
 
             progress_bar.set_description(
                 f"Epoch = {epoch}, CE Loss = {ce_loss.item():.4f}, "
                 f"ADV Loss = {adv_loss.item():.4f}"
             )
-        wandb.log({
-            'ce_loss': epoch_ce_loss, 
-            'adv_loss': epoch_adv_loss, 
-            'total_loss': epoch_adv_loss + epoch_ce_loss,
-        })
+            wandb.log({
+                'ce_loss': ce_loss.item(), 
+                'adv_loss': adv_loss.item(), 
+                'total_loss': adv_loss.item() + ce_loss.item(),
+            })
+
+            if i % config['log_image_freq'] == 0:
+                pred = F.softmax(y_hat[0], dim=0)
+                pred_index = pred.argmax().item()
+                pred_conf = pred[pred_index]
+
+                adv_pred = F.softmax(y_adv_hat[0], dim=0)
+                adv_pred_index = adv_pred.argmax().item()
+                adv_pred_conf = adv_pred[adv_pred_index]
+                wandb.log({
+                    'real_examples': wandb.Image(
+                        x[0], 
+                        caption=f'true={y[0]}, pred={pred_index}, conf={pred_conf:.1%}'
+                    ),
+                    'adversarial_examples': wandb.Image(
+                        x_adv[0], 
+                        caption=f'true={y[0]}, pred={adv_pred_index}, conf={adv_pred_conf:.1%}'
+                    ),
+                })
 
     model_path = os.path.join(wandb.run.dir, "model.h5")
     print(f"Saving model to: {model_path}")
     wandb.save(model_path)
     wandb.finish()
-    return model
+    return model.eval()
+ #%%
+def test_untargeted_attack_mnist(model, untargeted_adv_attack, eps):
+    # Load the models
+    model = model.eval()
+    
+    # Load the preprocessed image
+    image, true_label = testset[0]
+    image = image.to(device=device)
+    true_index = int(true_label)
+    norm_image = mnist_normalise(image)
+
+    # Generate predictions
+    _, label, confidence = w7d3_utils.make_single_prediction(model, norm_image)
+
+    # Generate Adversarial Example
+    true_index = torch.Tensor([true_index]).type(torch.long)
+    adv_image = untargeted_adv_attack(
+        image.unsqueeze(0), 
+        true_index, 
+        model, 
+        mnist_normalise, 
+        eps=eps
+    ).squeeze(0)
+    norm_adv_image = mnist_normalise(adv_image)
+
+    # Display Results
+    _, adv_label, adv_confidence = w7d3_utils.make_single_prediction(model, norm_adv_image)
+
+    # Display Images
+    w7d3_utils.display_adv_images(
+        image, 
+        adv_image,
+        (label, confidence),
+        (adv_label, adv_confidence),
+        channels_first=True,
+        denormalize=False
+    )
 #%%
-# FIXME: add validation adv attack examples
+convnet_config['lambda_adv'] = 0.0
 convnet_model = train_convnet(convnet_config)
 #%%
+convnet_config['lambda_adv'] = 1.0
+robust_model = train_convnet(convnet_config)
+#%% [markdown]
+#### Vanilla model diagnostics
+# %%
+test_untargeted_attack_mnist(convnet_model, untargeted_FGSM, eps=0.3)
+# %%
+test_untargeted_attack_mnist(convnet_model, untargeted_FGSM, eps=0.6)
+# %%
+test_untargeted_attack_mnist(convnet_model, untargeted_FGSM, eps=0.8)
+#%% [markdown]
+#### Robust model diagnostics
+# %%
+test_untargeted_attack_mnist(robust_model, untargeted_FGSM, eps=0.3)
+# %%
+test_untargeted_attack_mnist(robust_model, untargeted_FGSM, eps=0.6)
+# %%
+test_untargeted_attack_mnist(robust_model, untargeted_FGSM, eps=0.8)
+# #%%
+# test_untargeted_attack_mnist(convnet_model, untargeted_PGD, eps=0.95)
+# # %%
+# test_untargeted_attack_mnist(convnet_model, untargeted_PGD, eps=0.9)
+# %%
