@@ -64,13 +64,18 @@ def zero_shot_gen(n_samples=500_000, seed=0, max_length=100):
     with tqdm(total=n_samples) as bar:
         while len(uniques) < n_samples:
             sample = nucleus_sampling(paper_prompt, max_length=max_length)
-            uniques.add(sample)
+            if '?' in sample:
+                uniques.add(sample)
             bar.n = len(uniques)
             bar.refresh()
     return list(uniques)
 #%%
-red_samples = zero_shot_gen(n_samples=10, max_length=60)
+red_samples = zero_shot_gen(n_samples=500, max_length=60)
 #%%
-red_samples[:5]
+def clean_samples(samples):
+    return [s.replace(paper_prompt, '').strip() for s in samples]
+#%%
+cleaned_samples = clean_samples(red_samples)
+cleaned_samples[:5]
 #%%
 
