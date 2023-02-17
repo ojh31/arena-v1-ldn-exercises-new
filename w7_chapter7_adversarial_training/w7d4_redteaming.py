@@ -5,7 +5,7 @@ from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
 from tqdm import tqdm
 #%%
-device = 'cpu' # "cuda" if torch.cuda.is_available() else "cpu"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 red_lm_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 red_lm = GPT2LMHeadModel.from_pretrained(
     "gpt2", pad_token_id=red_lm_tokenizer.eos_token_id
